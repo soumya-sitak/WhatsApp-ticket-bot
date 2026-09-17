@@ -24,7 +24,7 @@ const nodemailer = require('nodemailer');
 // ----------------------------- CONFIG -------------------------------------
 const CONFIG = {
   // Multiple groups to monitor
-  groups: (process.env.WHATSAPP_GROUPS || 'test,engineering').split(',').map(g => g.trim()),
+  groups: (process.env.WHATSAPP_GROUPS || 'test').split(',').map(g => g.trim()),
 
   ignoreOwnMessages: process.env.BOT_IGNORE_OWN_MESSAGES === 'true' ? true : false,
   commands: (process.env.BOT_COMMANDS || '/raise,/ticket,!raise,!ticket').split(',').map(c => c.trim()),
@@ -57,7 +57,9 @@ const CONFIG = {
 const AI_SYSTEM_PROMPT =
   'You are an assistant that converts reported WhatsApp issues into formal engineering/ops support tickets.\n' +
   'Analyze the problem carefully and reply ONLY with compact JSON:\n' +
-  '{"subject": "Clear issue title (max 75 chars)", "summary": "1-3 sentences"}';
+  '{"subject": "Clear issue title (max 75 chars)", "summary": "1-3 sentences", "relevant_context_indexes": [array of indexes that are relevant to the issue]}\n' +
+  'Only include context message indexes (0-based, referring to the contextMessages array) that materially help explain, reproduce, clarify, or provide background for the reported issue.\n' +
+  'If no context messages are relevant, use an empty array: []';
 
 function extractJson(content) {
   if (!content) return null;
@@ -165,6 +167,41 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
        </div>`
     : '';
 
+  // Build Related Conversation section from AI-selected relevant context messages
+  let relatedConversationHtml = '';
+  if (ai?.relevant_context_indexes && Array.isArray(ai.relevant_context_indexes)) {
+    // Validate and filter indexes: must be integers within contextMessages bounds, no duplicates
+    const validIndexes = [...new Set(
+      ai.relevant_context_indexes
+        .filter(idx => Number.isInteger(idx) && idx >= 0 && idx < contextMessages.length)
+    )].sort((a, b) => a - b);
+
+    if (validIndexes.length > 0) {
+      const contextHtml = validIndexes.map(idx => {
+        const ctx = contextMessages[idx];
+        const senderEscaped = ctx.sender.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const textEscaped = ctx.text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>');
+        return `
+          <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #e5e7eb;">
+            <div style="font-size:12px;color:#64748b;margin-bottom:3px;">
+              ${formatTime(ctx.timestamp)} — <b>${senderEscaped}</b>
+            </div>
+            <div style="font-size:14px;color:#1e293b;line-height:1.5;">${textEscaped}</div>
+          </div>`;
+      }).join('');
+
+      relatedConversationHtml = `
+        <div style="margin-bottom:16px;">
+          <div style="font-size:11px;color:#475569;font-weight:bold;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">
+            Related Conversation
+          </div>
+          <div style="padding:12px 14px;background:#f8fafc;border-left:4px solid #94a3b8;border-radius:2px;font-size:14px;color:#0f172a;">
+            ${contextHtml}
+          </div>
+        </div>`;
+    }
+  }
+
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:680px;color:#1e293b;line-height:1.4;">
       <div style="background:#0f172a;color:#ffffff;padding:12px 18px;border-radius:6px 6px 0 0;">
@@ -177,6 +214,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
       <div style="border:1px solid #e2e8f0;border-top:none;border-radius:0 0 6px 6px;padding:18px;background:#ffffff;">
         ${summaryHtml}
         ${raiserNoteHtml}
+        ${relatedConversationHtml}
 
         <div style="margin-bottom:12px;">
           <div style="font-size:11px;color:#15803d;font-weight:bold;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">
@@ -186,7 +224,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
             <div style="font-size:12px;color:#64748b;margin-bottom:4px;">
               ${formatTime(reportedTimestamp)}
             </div>
-            <div>${reportedText.replace(/</g, '&lt;').replace(/\n/g, '<br/>')}</div>
+            <div>${reportedText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</div>
           </div>
         </div>
       </div>
@@ -491,7 +529,7 @@ client.on('message_create', async msg => {
       // Confirm in WhatsApp only if email succeeded
       if (aiResult !== null && CONFIG.confirmInGroup) {
         try {
-          await msg.reply('🎟️ *Ticket Raised!*');
+          await msg.reply('🎟️ *Ticket Raised*');
         } catch (err) {
           console.warn('Failed to send WhatsApp confirmation:', err.message);
         }
