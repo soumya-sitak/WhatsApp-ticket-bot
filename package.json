@@ -1,0 +1,53 @@
+{
+  "name": "whatsapp-ticket-bot",
+  "version": "1.0.0",
+  "description": "Production-grade WhatsApp group monitoring bot that creates support tickets via email",
+  "main": "whatsapp-mail-bridge.js",
+  "scripts": {
+    "start": "node whatsapp-mail-bridge.js",
+    "dev": "NODE_ENV=development node whatsapp-mail-bridge.js",
+    "pm2:start": "pm2 start pm2.config.js --env production",
+    "pm2:stop": "pm2 stop whatsapp-ticket-bot",
+    "pm2:restart": "pm2 restart whatsapp-ticket-bot",
+    "pm2:reload": "pm2 reload whatsapp-ticket-bot",
+    "pm2:logs": "pm2 logs whatsapp-ticket-bot",
+    "pm2:monit": "pm2 monit",
+    "pm2:status": "pm2 status",
+    "pm2:startup": "pm2 startup && pm2 save",
+    "pm2:kill": "pm2 kill",
+    "logs:view": "tail -f logs/bot-*.log",
+    "logs:clear": "rm -f logs/bot-*.log",
+    "session:reset": "rm -rf wa-session/",
+    "setup": "npm install && cp .env.example .env && echo '✅ Setup complete! Edit .env with your configuration.'"
+  },
+  "keywords": [
+    "whatsapp",
+    "ticket",
+    "automation",
+    "email",
+    "slack",
+    "support",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "whatsapp-web.js": "^1.34.7",
+    "nodemailer": "^10.0.10",
+    "qrcode-terminal": "^0.12.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=7.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-repo/whatsapp-ticket-bot"
+  },
+  "bugs": {
+    "url": "https://github.com/your-repo/whatsapp-ticket-bot/issues"
+  },
+  "homepage": "https://github.com/your-repo/whatsapp-ticket-bot#readme"
+}
