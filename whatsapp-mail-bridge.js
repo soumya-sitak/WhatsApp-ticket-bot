@@ -20,6 +20,8 @@ require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const nodemailer = require('nodemailer');
+const fs = require('fs');
+const path = require('path');
 
 // ----------------------------- CONFIG -------------------------------------
 const CONFIG = {
@@ -80,6 +82,48 @@ function extractJson(content) {
 
 function formatTime(timestamp) {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// ============================================================================
+// CSV TICKET LOGGING
+// ============================================================================
+
+function escapeCSVField(value) {
+  if (!value) return '""';
+  const str = String(value);
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return `"${str}"`;
+}
+
+async function logTicketToCSV({ timestamp, chatName, reporterName, raiserName, issueSubject, raiserNotes, summary }) {
+  try {
+    const csvPath = path.join(process.cwd(), 'tickets.csv');
+    const fileExists = fs.existsSync(csvPath);
+
+    const headers = 'Timestamp,Group,Reporter,Raiser,Issue,Notes,Summary\n';
+    const row = [
+      new Date(timestamp * 1000).toLocaleString(),
+      chatName,
+      reporterName,
+      raiserName,
+      issueSubject,
+      raiserNotes || '',
+      summary || '',
+    ].map(escapeCSVField).join(',') + '\n';
+
+    if (!fileExists) {
+      fs.writeFileSync(csvPath, headers + row, 'utf8');
+      console.log(`📊 Created tickets.csv with first ticket`);
+    } else {
+      fs.appendFileSync(csvPath, row, 'utf8');
+      console.log(`📊 Appended ticket to tickets.csv`);
+    }
+  } catch (err) {
+    console.warn('⚠ CSV logging failed:', err.message);
+    // Non-critical: don't throw, just warn
+  }
 }
 
 // ============================================================================
@@ -243,6 +287,19 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
     console.log(`📧 Sending email to: ${CONFIG.mail.to.join(', ')}${CONFIG.mail.cc.length > 0 ? ` (CC: ${CONFIG.mail.cc.join(', ')})` : ''}`);
     await transporter.sendMail(mailOptions);
     console.log(`✔ Email ticket sent successfully`);
+
+    // Log ticket to CSV (non-critical, doesn't block email success)
+    const issueSubject = ai?.subject || `[No AI subject] ${reportedText.slice(0, 60)}`;
+    await logTicketToCSV({
+      timestamp: reportedTimestamp,
+      chatName,
+      reporterName,
+      raiserName,
+      issueSubject,
+      raiserNotes,
+      summary: ai?.summary,
+    });
+
     return ai;
   } catch (err) {
     console.error('✖ Mail error:', err.message);
