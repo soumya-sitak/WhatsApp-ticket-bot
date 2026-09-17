@@ -383,6 +383,7 @@ const htmlPage = `
         const response = await fetch('/api/tickets');
         if (!response.ok) throw new Error('Failed to fetch tickets');
         allTickets = await response.json();
+        filteredTickets = [...allTickets];
         populateFilters();
         renderTable();
         updateStats();
@@ -417,15 +418,15 @@ const htmlPage = `
 
     function applyFilters() {
       const searchTerm = document.getElementById('search').value.toLowerCase();
-      const groupFilter = document.getElementById('filterGroup').value;
-      const raiserFilter = document.getElementById('filterRaiser').value;
+      const groupFilter = document.getElementById('filterGroup').value.trim();
+      const raiserFilter = document.getElementById('filterRaiser').value.trim();
 
       filteredTickets = allTickets.filter(ticket => {
         const matchesSearch = !searchTerm || Object.values(ticket).some(val =>
           String(val).toLowerCase().includes(searchTerm)
         );
-        const matchesGroup = !groupFilter || ticket.group === groupFilter;
-        const matchesRaiser = !raiserFilter || ticket.raiser === raiserFilter;
+        const matchesGroup = groupFilter === '' || ticket.group === groupFilter;
+        const matchesRaiser = raiserFilter === '' || ticket.raiser === raiserFilter;
 
         return matchesSearch && matchesGroup && matchesRaiser;
       });
