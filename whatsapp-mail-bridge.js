@@ -97,16 +97,15 @@ function escapeCSVField(value) {
   return `"${str}"`;
 }
 
-async function logTicketToCSV({ timestamp, chatName, reporterName, raiserName, issueSubject, raiserNotes, summary }) {
+async function logTicketToCSV({ timestamp, chatName, raiserName, issueSubject, raiserNotes, summary }) {
   try {
     const csvPath = path.join(process.cwd(), 'tickets.csv');
     const fileExists = fs.existsSync(csvPath);
 
-    const headers = 'Timestamp,Group,Reporter,Raiser,Issue,Notes,Summary\n';
+    const headers = 'Timestamp,Group,Raiser,Issue,Notes,Summary\n';
     const row = [
       new Date(timestamp * 1000).toLocaleString(),
       chatName,
-      reporterName,
       raiserName,
       issueSubject,
       raiserNotes || '',
@@ -293,7 +292,6 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
     await logTicketToCSV({
       timestamp: reportedTimestamp,
       chatName,
-      reporterName,
       raiserName,
       issueSubject,
       raiserNotes,
