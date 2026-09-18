@@ -7,11 +7,11 @@ module.exports = {
       exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
-        # AI Configuration
+        // AI Configuration
         AI_API_KEY: 'your-api-key-here',
         AI_BASE_URL: 'http://localhost:20128/v1',
         AI_MODEL: 'omni',
-        # Email Configuration
+        // Email Configuration
         MAIL_HOST: 'smtp.gmail.com',
         MAIL_PORT: '465',
         MAIL_SECURE: 'true',
@@ -20,15 +20,15 @@ module.exports = {
         MAIL_TO: 'recipient1@example.com,recipient2@example.com',
         MAIL_CC: 'cc-recipient@example.com',
         MAIL_BCC: 'bcc-recipient@example.com',
-        # WhatsApp Groups
+        // WhatsApp Groups
         WHATSAPP_GROUPS: 'test,engineering,support',
-        # Bot Behavior
+        // Bot Behavior
         BOT_PREFIX: '[WA→Ticket]',
         BOT_COMMANDS: '/raise,/ticket,!raise,!ticket',
         BOT_CONTEXT_MESSAGES_COUNT: '4',
         BOT_CONFIRM_IN_GROUP: 'true',
         BOT_IGNORE_OWN_MESSAGES: 'false',
-        # Logging
+        // Logging
         LOG_LEVEL: 'INFO',
         LOG_DIR: './logs',
       },
@@ -62,7 +62,7 @@ module.exports = {
       repo: 'git@github.com:your-repo.git',
       path: '/var/www/whatsapp-ticket-bot',
       'post-deploy':
-        'npm install && pm2 reload ecosystem.config.js --env production',
+        'npm install && pm2 reload pm2.config.js --env production',
     },
   },
 };
