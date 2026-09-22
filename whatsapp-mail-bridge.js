@@ -84,6 +84,20 @@ function formatTime(timestamp) {
   return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function cleanIssueText(text) {
+  if (!text) return text;
+
+  // Remove "reported by" patterns in various formats:
+  // - "reported by user 235450191110219"
+  // - ", reported by John"
+  // - "reported by: user123"
+  // Handles: leading comma/space, optional colon, and everything until punctuation/end
+  return text
+    .replace(/,?\s*reported\s+by\s*:?\s*[^\n.,!?;]*/gi, '')
+    .replace(/\s+/g, ' ')  // Normalize multiple spaces to single space
+    .trim();
+}
+
 // ============================================================================
 // CSV TICKET LOGGING
 // ============================================================================
@@ -97,16 +111,15 @@ function escapeCSVField(value) {
   return `"${str}"`;
 }
 
-async function logTicketToCSV({ timestamp, chatName, reporterName, raiserName, issueSubject, raiserNotes, summary }) {
+async function logTicketToCSV({ timestamp, chatName, raiserName, issueSubject, raiserNotes, summary }) {
   try {
     const csvPath = path.join(process.cwd(), 'tickets.csv');
     const fileExists = fs.existsSync(csvPath);
 
-    const headers = 'Timestamp,Group,Reporter,Raiser,Issue,Notes,Summary\n';
+    const headers = 'Timestamp,Group,Raiser,Issue,Notes,Summary\n';
     const row = [
       new Date(timestamp * 1000).toLocaleString(),
       chatName,
-      reporterName,
       raiserName,
       issueSubject,
       raiserNotes || '',
@@ -293,7 +306,6 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
     await logTicketToCSV({
       timestamp: reportedTimestamp,
       chatName,
-      reporterName,
       raiserName,
       issueSubject,
       raiserNotes,
@@ -571,11 +583,14 @@ client.on('message_create', async msg => {
 
     console.log(`📎 Gathered ${contextMessages.length} context message(s)`);
 
+    // Clean the issue text by removing "reported by" patterns
+    const cleanedQuotedText = cleanIssueText(quotedText);
+
     // Send email
     try {
       const aiResult = await sendTicketEmail({
         chatName: chatName,
-        reportedText: quotedText,
+        reportedText: cleanedQuotedText,
         reporterName: quotedSender,
         raiserName: senderName,
         raiserNotes: raiserNotes,
