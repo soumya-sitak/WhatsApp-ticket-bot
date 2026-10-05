@@ -26,10 +26,10 @@ const path = require('path');
 // ----------------------------- CONFIG -------------------------------------
 const CONFIG = {
   // Multiple groups to monitor
-  groups: (process.env.WHATSAPP_GROUPS || 'test').split(',').map(g => g.trim()),
+  groups: (process.env.WHATSAPP_GROUPS || 'test').split(',').map(g => g.trim()).filter(Boolean),
 
   ignoreOwnMessages: process.env.BOT_IGNORE_OWN_MESSAGES === 'true' ? true : false,
-  commands: (process.env.BOT_COMMANDS || '/raise,/ticket,!raise,!ticket').split(',').map(c => c.trim()),
+  commands: (process.env.BOT_COMMANDS || '/raise,/ticket,!raise,!ticket').split(',').map(c => c.trim().toLowerCase()).filter(Boolean),
   contextMessagesCount: parseInt(process.env.BOT_CONTEXT_MESSAGES_COUNT || '4', 10),
   confirmInGroup: process.env.BOT_CONFIRM_IN_GROUP === 'false' ? false : true,
 
@@ -48,7 +48,7 @@ const CONFIG = {
   prefix: process.env.BOT_PREFIX || '[WA→Ticket]',
 
   ai: {
-    enabled: process.env.AI_ENABLED || false,
+    enabled: process.env.AI_ENABLED === 'false' ? false : true,
     baseUrl: process.env.AI_BASE_URL || 'http://localhost:20128/v1',
     model: process.env.AI_MODEL || 'omni',
     apiKey: process.env.AI_API_KEY || '',
@@ -58,13 +58,24 @@ const CONFIG = {
 
 const AI_SYSTEM_PROMPT =
   'You are an assistant that converts reported WhatsApp issues into formal engineering/ops support tickets.\n' +
+  'Do not include reporter names, phone numbers, WhatsApp user IDs, or phrases like "reported by user XXXXX" in the subject or summary unless they are directly relevant to the technical issue.\n' +
   'Analyze the problem carefully and reply ONLY with compact JSON:\n' +
   '{"subject": "Clear issue title (max 75 chars)", "summary": "1-3 sentences", "relevant_context_indexes": [array of indexes that are relevant to the issue]}\n' +
   'Only include context message indexes (0-based, referring to the contextMessages array) that materially help explain, reproduce, clarify, or provide background for the reported issue.\n' +
   'If no context messages are relevant, use an empty array: []';
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function extractJson(content) {
-  if (!content) return null;
+  if (!content || typeof content !== 'string') return null;
   let cleaned = content.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1').trim();
   try {
     return JSON.parse(cleaned);
@@ -72,20 +83,28 @@ function extractJson(content) {
     const firstBrace = cleaned.indexOf('{');
     const lastBrace = cleaned.lastIndexOf('}');
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const jsonCandidate = cleaned.slice(firstBrace, lastBrace + 1);
       try {
-        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
-      } catch (_) { }
+        return JSON.parse(jsonCandidate);
+      } catch (_) {
+        try {
+          const fixed = jsonCandidate.replace(/,\s*([\]}])/g, '$1');
+          return JSON.parse(fixed);
+        } catch (_) { }
+      }
     }
   }
   return null;
 }
 
 function formatTime(timestamp) {
-  return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (!timestamp) return '';
+  const ms = timestamp > 1e11 ? timestamp : timestamp * 1000;
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function cleanIssueText(text) {
-  if (!text) return text;
+  if (!text || typeof text !== 'string') return text || '';
 
   // Remove "reported by" patterns in various formats:
   // - "reported by user 235450191110219"
@@ -93,8 +112,14 @@ function cleanIssueText(text) {
   // - "reported by: user123"
   // Handles: leading comma/space, optional colon, and everything until punctuation/end
   return text
-    .replace(/,?\s*reported\s+by\s*:?\s*[^\n.,!?;]*/gi, '')
-    .replace(/\s+/g, ' ')  // Normalize multiple spaces to single space
+    // Remove: "reported by user 235450191110219"
+    .replace(/\s*,?\s*reported\s+by\s+(?:user\s+)?\d+\s*/gi, ' ')
+
+    // Remove: "reported by John"
+    .replace(/\s*,?\s*reported\s+by\s*:?\s*[^\n.,!?;]+/gi, ' ')
+
+    // Normalize whitespace
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -103,9 +128,9 @@ function cleanIssueText(text) {
 // ============================================================================
 
 function escapeCSVField(value) {
-  if (!value) return '""';
+  if (value === null || value === undefined) return '""';
   const str = String(value);
-  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+  if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return `"${str}"`;
@@ -117,11 +142,12 @@ async function logTicketToCSV({ timestamp, chatName, raiserName, issueSubject, r
     const fileExists = fs.existsSync(csvPath);
 
     const headers = 'Timestamp,Group,Raiser,Issue,Notes,Summary\n';
+    const ms = timestamp > 1e11 ? timestamp : timestamp * 1000;
     const row = [
-      new Date(timestamp * 1000).toLocaleString(),
-      chatName,
-      raiserName,
-      issueSubject,
+      new Date(ms).toLocaleString(),
+      chatName || '',
+      raiserName || '',
+      issueSubject || '',
       raiserNotes || '',
       summary || '',
     ].map(escapeCSVField).join(',') + '\n';
@@ -146,7 +172,7 @@ async function logTicketToCSV({ timestamp, chatName, raiserName, issueSubject, r
 async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes, contextMessages }) {
   if (!CONFIG.ai.enabled) return null;
 
-  const contextStr = contextMessages.length > 0
+  const contextStr = contextMessages && contextMessages.length > 0
     ? contextMessages.map(m => `[${formatTime(m.timestamp)}] ${m.sender}: ${m.text}`).join('\n')
     : '(No preceding messages)';
 
@@ -158,6 +184,9 @@ async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes
     (raiserNotes ? `Raiser Note: "${raiserNotes}" (raised by ${raiserName})\n` : '');
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     const res = await fetch(`${CONFIG.ai.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -172,7 +201,10 @@ async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes
         ],
         temperature: 0.3,
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const rawContent = data.choices?.[0]?.message?.content;
@@ -214,19 +246,19 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
   const summaryHtml = ai?.summary
     ? `<div style="background:#f0f9ff;border-left:4px solid #0284c7;padding:14px 16px;border-radius:4px;margin-bottom:18px;">
          <h4 style="margin:0 0 8px 0;color:#0369a1;font-size:15px;">Issue Summary</h4>
-         <p style="margin:0;line-height:1.5;color:#1e293b;font-size:14px;">${ai.summary.replace(/</g, '&lt;')}</p>
+         <p style="margin:0;line-height:1.5;color:#1e293b;font-size:14px;">${escapeHtml(ai.summary)}</p>
        </div>`
     : '';
 
   const raiserNoteHtml = raiserNotes
     ? `<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:10px 14px;border-radius:4px;margin-bottom:14px;font-size:13px;color:#92400e;">
-         <b>Note from ${raiserName}:</b> ${raiserNotes.replace(/</g, '&lt;')}
+         <b>Note from ${escapeHtml(raiserName)}:</b> ${escapeHtml(raiserNotes)}
        </div>`
     : '';
 
   // Build Related Conversation section from AI-selected relevant context messages
   let relatedConversationHtml = '';
-  if (ai?.relevant_context_indexes && Array.isArray(ai.relevant_context_indexes)) {
+  if (ai?.relevant_context_indexes && Array.isArray(ai.relevant_context_indexes) && contextMessages?.length > 0) {
     // Validate and filter indexes: must be integers within contextMessages bounds, no duplicates
     const validIndexes = [...new Set(
       ai.relevant_context_indexes
@@ -236,8 +268,8 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
     if (validIndexes.length > 0) {
       const contextHtml = validIndexes.map(idx => {
         const ctx = contextMessages[idx];
-        const senderEscaped = ctx.sender.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const textEscaped = ctx.text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>');
+        const senderEscaped = escapeHtml(ctx.sender);
+        const textEscaped = escapeHtml(ctx.text).replace(/\n/g, '<br/>');
         return `
           <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #e5e7eb;">
             <div style="font-size:12px;color:#64748b;margin-bottom:3px;">
@@ -264,7 +296,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
       <div style="background:#0f172a;color:#ffffff;padding:12px 18px;border-radius:6px 6px 0 0;">
         <h2 style="margin:0;font-size:17px;font-weight:600;">WhatsApp Support Ticket</h2>
         <div style="font-size:12px;color:#94a3b8;margin-top:4px;">
-          Group: <b>${chatName}</b> &bull; Raised by: <b>${raiserName}</b> &bull; ${new Date().toLocaleString()}
+          Group: <b>${escapeHtml(chatName)}</b> &bull; Raised by: <b>${escapeHtml(raiserName)}</b> &bull; ${new Date().toLocaleString()}
         </div>
       </div>
 
@@ -281,7 +313,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
             <div style="font-size:12px;color:#64748b;margin-bottom:4px;">
               ${formatTime(reportedTimestamp)}
             </div>
-            <div>${reportedText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</div>
+            <div>${escapeHtml(reportedText).replace(/\n/g, '<br/>')}</div>
           </div>
         </div>
       </div>
@@ -312,7 +344,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
       summary: ai?.summary,
     });
 
-    return ai;
+    return { success: true, ai };
   } catch (err) {
     console.error('✖ Mail error:', err.message);
     return null;
@@ -326,8 +358,16 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './wa-session' }),
   puppeteer: {
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
     headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-gpu',
+    ],
   },
 });
 
@@ -336,6 +376,7 @@ const groupHistories = {};
 
 async function getChatInfo(chatId) {
   try {
+    if (!client.pupPage) return null;
     return await client.pupPage.evaluate(id => {
       try {
         const chatCollection = window.require('WAWebCollections')?.Chat;
@@ -369,7 +410,9 @@ async function getChatInfo(chatId) {
 }
 
 async function getContactName(jid) {
+  if (!jid) return null;
   try {
+    if (!client.pupPage) return null;
     return await client.pupPage.evaluate(id => {
       try {
         const contact = window.require('WAWebCollections')?.Contact?.get(id);
@@ -384,23 +427,36 @@ async function getContactName(jid) {
 
 async function listAllGroups() {
   try {
-    return await client.pupPage.evaluate(() => {
-      try {
-        const chats = window.require('WAWebCollections')?.Chat?.getModelsArray() || [];
-        return chats
-          .filter(c => c.isGroup || (c.id?._serialized && c.id._serialized.endsWith('@g.us')))
-          .map(c => ({
-            id: c.id._serialized,
-            name: (c.formattedTitle || c.name || c.contact?.name || c.contact?.pushname || '').trim(),
-          }));
-      } catch (_) {
-        return [];
-      }
-    });
+    if (client.pupPage) {
+      const groups = await client.pupPage.evaluate(() => {
+        try {
+          const chats = window.require('WAWebCollections')?.Chat?.getModelsArray() || [];
+          return chats
+            .filter(c => c.isGroup || (c.id?._serialized && c.id._serialized.endsWith('@g.us')))
+            .map(c => ({
+              id: c.id._serialized,
+              name: (c.formattedTitle || c.name || c.contact?.name || c.contact?.pushname || '').trim(),
+            }));
+        } catch (_) {
+          return [];
+        }
+      });
+      if (groups && groups.length > 0) return groups;
+    }
+
+    if (typeof client.getChats === 'function') {
+      const chats = await client.getChats();
+      return (chats || [])
+        .filter(c => c && c.isGroup)
+        .map(c => ({
+          id: c.id?._serialized || c.id,
+          name: (c.name || '').trim(),
+        }));
+    }
   } catch (err) {
     console.warn('⚠ listAllGroups failed:', err.message);
-    return [];
   }
+  return [];
 }
 
 async function findGroupByName(targetName) {
@@ -416,6 +472,22 @@ async function findGroupByName(targetName) {
 client.on('qr', qr => {
   console.log('Scan this QR with WhatsApp (Linked Devices):');
   qrcode.generate(qr, { small: true });
+});
+
+client.on('authenticated', () => {
+  console.log('✅ WhatsApp authenticated successfully');
+  console.log('⏳ Syncing WhatsApp messages & chats, please wait...');
+});
+
+client.on('loading_screen', (percent, message) => {
+  console.log(`⏳ WhatsApp loading: ${percent}% - ${message}`);
+  if (percent === 99 || percent === 100) {
+    console.log('⏳ Finalizing chat sync & initializing listeners...');
+  }
+});
+
+client.on('change_state', state => {
+  console.log(`🔄 WhatsApp state: ${state}`);
 });
 
 client.on('ready', async () => {
@@ -460,6 +532,24 @@ client.on('message_create', async msg => {
     if (CONFIG.ignoreOwnMessages && msg.fromMe) return;
 
     const chatId = msg.fromMe ? msg.to : msg.from;
+
+    // Dynamically detect configured group if not yet in activeGroups
+    if (!activeGroups[chatId]) {
+      try {
+        const chat = await msg.getChat();
+        if (chat && chat.isGroup) {
+          const matchedGroupName = CONFIG.groups.find(
+            g => g.toLowerCase() === (chat.name || '').trim().toLowerCase()
+          );
+          if (matchedGroupName) {
+            activeGroups[chatId] = { name: chat.name, id: chatId };
+            if (!groupHistories[chatId]) groupHistories[chatId] = [];
+            console.log(`✔ Dynamically detected configured group "${chat.name}" (ID: ${chatId})`);
+          }
+        }
+      } catch (_) { }
+    }
+
     if (!activeGroups[chatId]) return;
 
     const groupConfig = activeGroups[chatId];
@@ -484,7 +574,7 @@ client.on('message_create', async msg => {
     groupHistories[chatId].push(msgObj);
     if (groupHistories[chatId].length > 50) groupHistories[chatId].shift();
 
-    // Check for /raise command
+    // Check for configured commands
     const matchedCommand = CONFIG.commands.find(cmd =>
       trimmedBody.toLowerCase() === cmd || trimmedBody.toLowerCase().startsWith(cmd + ' ')
     );
@@ -499,7 +589,7 @@ client.on('message_create', async msg => {
     const raiserNotes = trimmedBody.slice(matchedCommand.length).trim();
 
     if (!msg.hasQuotedMsg && !msg._data?.quotedMsg) {
-      console.log(`ℹ /raise sent without reply - instructing user`);
+      console.log(`ℹ Command sent without reply - instructing user`);
       if (CONFIG.confirmInGroup) {
         try {
           await msg.reply('ℹ *To raise a ticket:* Please reply directly to the message describing the issue with `/raise`.');
@@ -525,7 +615,7 @@ client.on('message_create', async msg => {
           quotedTimestamp = quoted.timestamp || quotedTimestamp;
 
           const authorJid = quoted.author || quoted.from;
-          let contactName = await getContactName(authorJid);
+          let contactName = authorJid ? await getContactName(authorJid) : null;
           if (!contactName) {
             contactName = quoted._data?.notifyName || quoted._data?.pushname || (authorJid ? authorJid.replace(/@.*$/, '') : 'Unknown');
           }
@@ -588,7 +678,7 @@ client.on('message_create', async msg => {
 
     // Send email
     try {
-      const aiResult = await sendTicketEmail({
+      const result = await sendTicketEmail({
         chatName: chatName,
         reportedText: cleanedQuotedText,
         reporterName: quotedSender,
@@ -599,13 +689,13 @@ client.on('message_create', async msg => {
       });
 
       // Confirm in WhatsApp only if email succeeded
-      if (aiResult !== null && CONFIG.confirmInGroup) {
+      if (result && result.success && CONFIG.confirmInGroup) {
         try {
           await msg.reply('🎟️ *Ticket Raised*');
         } catch (err) {
           console.warn('Failed to send WhatsApp confirmation:', err.message);
         }
-      } else if (aiResult === null && CONFIG.confirmInGroup) {
+      } else if ((!result || !result.success) && CONFIG.confirmInGroup) {
         try {
           await msg.reply('✖ Failed to create ticket. Please try again or contact support.');
         } catch (err) {
@@ -624,7 +714,7 @@ client.on('disconnected', reason => {
   console.error('Disconnected:', reason);
   setTimeout(() => {
     console.log('Reconnecting...');
-    client.initialize();
+    client.initialize().catch(err => console.error('Reconnection failed:', err.message));
   }, 5000);
 });
 

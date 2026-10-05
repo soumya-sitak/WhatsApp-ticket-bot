@@ -13,53 +13,60 @@ const HOST = process.env.VIEWER_HOST || 'localhost';
 // ============================================================================
 
 function parseCSV(csvContent) {
-  const lines = csvContent.trim().split('\n');
-  if (lines.length < 2) return []; // No data
+  if (!csvContent || !csvContent.trim()) return [];
 
-  const headers = lines[0].split(',').map(h => h.trim());
+  const rows = [];
+  let currentRow = [];
+  let currentField = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < csvContent.length; i++) {
+    const char = csvContent[i];
+    const nextChar = csvContent[i + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentField += '"';
+        i++; // skip escaped quote
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      currentRow.push(currentField);
+      currentField = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++; // skip \n in CRLF
+      }
+      currentRow.push(currentField);
+      currentField = '';
+      if (currentRow.length > 0 && currentRow.some(f => f.trim() !== '')) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+    } else {
+      currentField += char;
+    }
+  }
+
+  if (currentField || currentRow.length > 0) {
+    currentRow.push(currentField);
+    if (currentRow.some(f => f.trim() !== '')) {
+      rows.push(currentRow);
+    }
+  }
+
+  if (rows.length < 2) return [];
+
+  const headers = rows[0].map(h => h.trim());
   const tickets = [];
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    const fields = [];
-    let currentField = '';
-    let insideQuotes = false;
-
-    for (let j = 0; j < line.length; j++) {
-      const char = line[j];
-
-      if (char === '"') {
-        if (insideQuotes && line[j + 1] === '"') {
-          // Escaped quote
-          currentField += '"';
-          j++;
-        } else {
-          // Toggle quote state
-          insideQuotes = !insideQuotes;
-        }
-      } else if (char === ',' && !insideQuotes) {
-        // Field separator
-        fields.push(currentField.trim());
-        currentField = '';
-      } else {
-        currentField += char;
-      }
-    }
-    fields.push(currentField.trim());
-
-    // Remove surrounding quotes from fields
-    const cleanedFields = fields.map(f => {
-      if (f.startsWith('"') && f.endsWith('"')) {
-        return f.slice(1, -1);
-      }
-      return f;
-    });
-
+  for (let i = 1; i < rows.length; i++) {
+    const fields = rows[i];
     const ticket = {};
     headers.forEach((header, idx) => {
-      ticket[header.toLowerCase()] = cleanedFields[idx] || '';
+      ticket[header.toLowerCase()] = fields[idx] !== undefined ? fields[idx] : '';
     });
-
     tickets.push(ticket);
   }
 
@@ -440,6 +447,16 @@ const htmlPage = `
       document.getElementById('displayCount').textContent = filteredTickets.length;
     }
 
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function renderTable() {
       if (filteredTickets.length === 0) {
         document.getElementById('tableContainer').innerHTML =
@@ -462,12 +479,12 @@ const htmlPage = `
           <tbody>
             \${filteredTickets.map(ticket => \`
               <tr>
-                <td class="timestamp">\${ticket.timestamp}</td>
-                <td class="group"><span class="badge">\${ticket.group}</span></td>
-                <td class="raiser">\${ticket.raiser}</td>
-                <td class="issue" title="\${ticket.issue}">\${ticket.issue}</td>
-                <td>\${ticket.notes || '—'}</td>
-                <td class="summary" title="\${ticket.summary}">\${ticket.summary || '—'}</td>
+                <td class="timestamp">\${escapeHtml(ticket.timestamp)}</td>
+                <td class="group"><span class="badge">\${escapeHtml(ticket.group)}</span></td>
+                <td class="raiser">\${escapeHtml(ticket.raiser)}</td>
+                <td class="issue" title="\${escapeHtml(ticket.issue)}">\${escapeHtml(ticket.issue)}</td>
+                <td>\${ticket.notes ? escapeHtml(ticket.notes) : '—'}</td>
+                <td class="summary" title="\${escapeHtml(ticket.summary)}">\${ticket.summary ? escapeHtml(ticket.summary) : '—'}</td>
               </tr>
             \`).join('')}
           </tbody>
@@ -486,8 +503,8 @@ const htmlPage = `
       const isAscending = filteredTickets.sorted === column && !filteredTickets.ascending;
 
       filteredTickets.sort((a, b) => {
-        const aVal = String(a[column]).toLowerCase();
-        const bVal = String(b[column]).toLowerCase();
+        const aVal = String(a[column] || '').toLowerCase();
+        const bVal = String(b[column] || '').toLowerCase();
 
         return isAscending ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal);
       });
