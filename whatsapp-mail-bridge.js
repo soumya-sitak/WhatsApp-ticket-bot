@@ -63,10 +63,13 @@ const CONFIG = {
 const AI_SYSTEM_PROMPT =
   'You are an assistant that converts reported WhatsApp issues into formal engineering/ops support tickets.\n' +
   'Do not include reporter names, phone numbers, WhatsApp user IDs, or phrases like "reported by user XXXXX" in the subject or summary unless they are directly relevant to the technical issue.\n' +
-  'Analyze the problem carefully and reply ONLY with compact JSON:\n' +
-  '{"subject": "Clear issue title (max 75 chars)", "summary": "1-3 sentences", "relevant_context_indexes": [array of indexes that are relevant to the issue]}\n' +
-  'Only include context message indexes (0-based, referring to the contextMessages array) that materially help explain, reproduce, clarify, or provide background for the reported issue.\n' +
-  'If no context messages are relevant, use an empty array: []';
+  'Review the reported issue and all background context messages carefully. If multiple distinct technical or operational issues are mentioned across the conversation (such as WhatsApp template issues, SMS delivery delays, Chatbot failures, etc.), identify and capture ALL of them:\n' +
+  '1. Subject: Clear concise title summarizing all key services affected (max 75 chars).\n' +
+  '2. Summary: Clear, professional summary. If multiple distinct issues are present, structure the summary with concise bullet points itemizing each issue clearly.\n' +
+  '3. Relevant Context Indexes: Include all context message indexes (0-based, referring to the contextMessages array) that correspond to ANY of the reported issues or provide necessary background.\n' +
+  'If no context messages are relevant, use an empty array: [].\n' +
+  'Reply ONLY with compact JSON:\n' +
+  '{"subject": "Clear issue title (max 75 chars)", "summary": "Detailed summary or bulleted breakdown", "relevant_context_indexes": [array of relevant context message indexes]}';
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -341,7 +344,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
   const summaryHtml = ai?.summary
     ? `<div style="background:#f0f9ff;border-left:4px solid #0284c7;padding:14px 16px;border-radius:4px;margin-bottom:18px;">
          <h4 style="margin:0 0 8px 0;color:#0369a1;font-size:15px;">Issue Summary</h4>
-         <p style="margin:0;line-height:1.5;color:#1e293b;font-size:14px;">${escapeHtml(ai.summary)}</p>
+         <p style="margin:0;line-height:1.5;color:#1e293b;font-size:14px;">${escapeHtml(ai.summary).replace(/\n/g, '<br/>')}</p>
        </div>`
     : '';
 
@@ -771,6 +774,19 @@ async function findGroupByName(targetName) {
   return groups.find(g => g.name.toLowerCase() === normalizedTarget) || null;
 }
 
+const processedMessageIds = new Map();
+
+function isDuplicateMessage(msgId) {
+  if (!msgId) return false;
+  const now = Date.now();
+  for (const [id, time] of processedMessageIds.entries()) {
+    if (now - time > 60000) processedMessageIds.delete(id);
+  }
+  if (processedMessageIds.has(msgId)) return true;
+  processedMessageIds.set(msgId, now);
+  return false;
+}
+
 let syncCheckInterval = null;
 
 function startSyncWatchdog() {
@@ -786,15 +802,16 @@ function startSyncWatchdog() {
       return;
     }
 
+    // Only intervene as a fallback if stuck at 99-100% for over 30 seconds
+    if (attempts < 20) return;
+
     try {
       const triggered = await client.pupPage.evaluate(() => {
         try {
           const socket = window.require('WAWebSocketModel')?.Socket;
-          const chatCol = window.require('WAWebCollections')?.Chat;
-          const hasChats = Boolean(chatCol && typeof chatCol.getModelsArray === 'function' && chatCol.getModelsArray().length > 0);
           const isReady = socket && (socket.state === 'CONNECTED' || socket.hasSynced === true);
 
-          if ((isReady || hasChats) && typeof window.onAppStateHasSyncedEvent === 'function') {
+          if (isReady && typeof window.onAppStateHasSyncedEvent === 'function') {
             window.onAppStateHasSyncedEvent();
             return true;
           }
@@ -803,16 +820,17 @@ function startSyncWatchdog() {
       });
 
       if (triggered) {
+        console.log('🔄 Sync watchdog triggered initialization fallback');
         clearInterval(syncCheckInterval);
         syncCheckInterval = null;
       }
     } catch (_) { }
 
-    if (attempts >= 40) {
+    if (attempts >= 60) {
       clearInterval(syncCheckInterval);
       syncCheckInterval = null;
     }
-  }, 1200);
+  }, 1500);
 }
 
 // ============================================================================
@@ -868,6 +886,28 @@ client.on('ready', async () => {
     console.error('Error finding groups on startup:', err.message);
   }
 
+  // Ensure message collection listener is active on the live Msg collection
+  try {
+    if (client.pupPage && !client.pupPage.isClosed()) {
+      await client.pupPage.evaluate(() => {
+        try {
+          const Msg = window.require('WAWebCollections')?.Msg;
+          if (Msg && typeof Msg.on === 'function' && !window.__wwebjs_msg_listener_fixed) {
+            window.__wwebjs_msg_listener_fixed = true;
+            Msg.on('add', (msg) => {
+              try {
+                if (msg && msg.isNewMsg && typeof window.onAddMessageEvent === 'function') {
+                  const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(msg) : msg;
+                  window.onAddMessageEvent(model);
+                }
+              } catch (_) { }
+            });
+          }
+        } catch (_) { }
+      });
+    }
+  } catch (_) { }
+
   console.log(`\n========================================================`);
   console.log(`Ready! Monitoring ${Object.keys(activeGroups).length} group(s)`);
   console.log(`To raise a ticket: Reply with "raise" / "/raise" OR type "raise <issue text>" / "/raise <issue text>"`);
@@ -881,7 +921,13 @@ client.on('auth_failure', msg => {
 
 client.on('message_create', async msg => {
   try {
+    if (!msg) return;
     if (msg.isStatus || msg.from === 'status@broadcast' || msg.type === 'protocol' || msg.type === 'e2e_notification' || msg.type === 'reaction') {
+      return;
+    }
+
+    const msgUniqueId = msg.id?._serialized || msg.id?.id || (msg._data?.id?.id ? String(msg._data.id.id) : null);
+    if (msgUniqueId && isDuplicateMessage(msgUniqueId)) {
       return;
     }
 
