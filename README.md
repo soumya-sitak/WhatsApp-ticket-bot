@@ -98,27 +98,22 @@ LOG_DIR=./logs
 
 ### Raising a Ticket
 
-1. In a monitored WhatsApp group, someone reports an issue:
-   > "RCS delivery failing on Airtel network since 2pm"
+There are two ways to raise a ticket in any monitored group:
 
-2. Any team member replies to that message with:
-   > `/raise` or `/raise P1 urgent`
+#### Method 1: Reply to an Issue Message
+1. Reply directly to any message describing an issue with `/raise` (or `/raise P1 urgent please check`).
+2. The bot extracts the quoted issue, captures preceding context messages, and creates the ticket with the original author as the reporter.
 
-3. Bot automatically:
-   - Extracts the quoted issue message
-   - Gathers previous 4 messages for context
-   - Generates AI ticket summary
-   - Sends formatted email to team
-   - Confirms in WhatsApp: `🎟️ Ticket Raised & Dispatched!`
+#### Method 2: Direct Issue Command
+1. Send `/raise <describe your issue here>` directly in the group (e.g. `/raise Dashboard data delayed since 2pm`).
+2. The bot creates a ticket from your text and captures preceding messages from the group as context.
 
----
+### Commands
 
-## Commands
-
-- `/raise` - Create ticket from quoted message
-- `/ticket` - Alias for `/raise`
-- `!raise` - Alternative prefix
-- `!ticket` - Alternative prefix
+- `raise` / `/raise [optional text]` - Create ticket from quoted message or directly from text
+- `ticket` / `/ticket [optional text]` - Alias for `raise` / `/raise`
+- `!raise [optional text]` - Alternative prefix
+- `!ticket [optional text]` - Alternative prefix
 
 ---
 

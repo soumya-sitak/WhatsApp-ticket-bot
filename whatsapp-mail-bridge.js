@@ -2,11 +2,16 @@
  * Office WhatsApp Group → Email Ticket Bot (/raise command)
  * ---------------------------------------------------------
  * Monitor multiple WhatsApp groups and process /raise commands.
- * When someone replies to an issue message with `/raise`, the bot:
- *   1. Extracts the quoted issue message
- *   2. Generates AI ticket summary
- *   3. Sends formatted email to recipients
- *   4. Replies in WhatsApp confirming the ticket was created
+ * When someone:
+ *   1. Replies to an issue message with `/raise` [optional notes], OR
+ *   2. Directly types `/raise <describe issue here>` without replying
+ *
+ * The bot:
+ *   - Extracts/processes the reported issue
+ *   - Gathers background conversation context
+ *   - Generates AI ticket summary
+ *   - Sends formatted email to recipients
+ *   - Replies in WhatsApp confirming the ticket was created
  *
  * Setup:
  *   1. npm install
@@ -15,7 +20,6 @@
  */
 
 require('dotenv').config();
-
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -29,7 +33,7 @@ const CONFIG = {
   groups: (process.env.WHATSAPP_GROUPS || 'test').split(',').map(g => g.trim()).filter(Boolean),
 
   ignoreOwnMessages: process.env.BOT_IGNORE_OWN_MESSAGES === 'true' ? true : false,
-  commands: (process.env.BOT_COMMANDS || '/raise,/ticket,!raise,!ticket').split(',').map(c => c.trim().toLowerCase()).filter(Boolean),
+  commands: (process.env.BOT_COMMANDS || 'raise,/raise,!raise,ticket,/ticket,!ticket').split(',').map(c => c.trim().toLowerCase()).filter(Boolean),
   contextMessagesCount: parseInt(process.env.BOT_CONTEXT_MESSAGES_COUNT || '4', 10),
   confirmInGroup: process.env.BOT_CONFIRM_IN_GROUP === 'false' ? false : true,
 
@@ -103,6 +107,97 @@ function formatTime(timestamp) {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function extractMessageText(msg) {
+  if (!msg) return '';
+  if (typeof msg === 'string') return msg;
+
+  const candidate =
+    msg.body ||
+    msg._data?.body ||
+    msg._data?.caption ||
+    msg.caption ||
+    msg._data?.text ||
+    msg._data?.comment ||
+    msg._data?.description ||
+    msg._data?.matchedText ||
+    msg._data?.pollName ||
+    msg.pollName ||
+    '';
+
+  return typeof candidate === 'string' ? candidate : String(candidate || '');
+}
+
+function isNumericOrId(str) {
+  if (!str || typeof str !== 'string') return true;
+  const clean = str.replace(/@.*$/, '').trim();
+  return /^\d+$/.test(clean) || clean.toLowerCase() === 'unknown';
+}
+
+function isSameMessage(historyMsg, targetId, stanzaId, text) {
+  if (!historyMsg) return false;
+  const hId = String(historyMsg.id || '');
+  const hStanza = String(historyMsg.stanzaId || '');
+  const hText = String(historyMsg.text || '').trim();
+
+  if (targetId) {
+    const tId = String(targetId);
+    if (hId === tId || hStanza === tId || hId.includes(tId) || tId.includes(hId)) return true;
+  }
+  if (stanzaId) {
+    const sId = String(stanzaId);
+    if (hStanza === sId || hId.includes(sId) || sId.includes(hId)) return true;
+  }
+  if (text && hText && text.trim() === hText) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeJid(jid) {
+  if (!jid || typeof jid !== 'string') return '';
+  return jid.replace(/:.*@/, '@').trim();
+}
+
+function getMsgChatId(msg) {
+  if (!msg) return null;
+  const rawRemote = typeof msg.id?.remote === 'string' ? msg.id.remote : (msg.id?.remote?._serialized || '');
+  const rawFrom = typeof msg.from === 'string' ? msg.from : (msg.from?._serialized || '');
+  const rawTo = typeof msg.to === 'string' ? msg.to : (msg.to?._serialized || '');
+
+  const remote = normalizeJid(rawRemote);
+  const from = normalizeJid(rawFrom);
+  const to = normalizeJid(rawTo);
+
+  if (remote && remote.endsWith('@g.us')) return remote;
+  if (from && from.endsWith('@g.us')) return from;
+  if (to && to.endsWith('@g.us')) return to;
+  return remote || from || to || null;
+}
+
+function matchCommand(text) {
+  if (!text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  for (const cmd of CONFIG.commands) {
+    if (lower === cmd) {
+      return { command: cmd, argText: '' };
+    }
+    if (lower.startsWith(cmd)) {
+      const nextChar = lower.charAt(cmd.length);
+      // Valid separators after command: whitespace (\s: space, \n, \r, \t), colon (:), dash (-)
+      if (/[\s:\-]/.test(nextChar)) {
+        const argText = trimmed.slice(cmd.length).replace(/^[\s:\-]+/, '').trim();
+        return { command: cmd, argText };
+      }
+    }
+  }
+  return null;
+}
+
+function isCommandMessage(text) {
+  return matchCommand(text) !== null;
+}
+
 function cleanIssueText(text) {
   if (!text || typeof text !== 'string') return text || '';
 
@@ -118,8 +213,8 @@ function cleanIssueText(text) {
     // Remove: "reported by John"
     .replace(/\s*,?\s*reported\s+by\s*:?\s*[^\n.,!?;]+/gi, ' ')
 
-    // Normalize whitespace
-    .replace(/\s+/g, ' ')
+    // Normalize horizontal whitespace while preserving newlines
+    .replace(/[ \t]+/g, ' ')
     .trim();
 }
 
@@ -311,7 +406,7 @@ async function sendTicketEmail({ chatName, reportedText, reporterName, raiserNam
           </div>
           <div style="padding:10px 14px;background:#f0fdf4;border-left:4px solid #22c55e;border-radius:2px;font-size:14px;color:#0f172a;">
             <div style="font-size:12px;color:#64748b;margin-bottom:4px;">
-              ${formatTime(reportedTimestamp)}
+              ${formatTime(reportedTimestamp)} — <b>${escapeHtml(reporterName)}</b>
             </div>
             <div>${escapeHtml(reportedText).replace(/\n/g, '<br/>')}</div>
           </div>
@@ -409,19 +504,228 @@ async function getChatInfo(chatId) {
   }
 }
 
-async function getContactName(jid) {
+async function getContactName(jid, chatId = null) {
   if (!jid) return null;
+  const rawId = typeof jid === 'string' ? jid.trim() : (jid._serialized || String(jid));
+  const cleanId = rawId.replace(/@.*$/, '');
+
   try {
-    if (!client.pupPage) return null;
-    return await client.pupPage.evaluate(id => {
+    if (client.pupPage) {
+      const result = await client.pupPage.evaluate((id, cId, numId) => {
+        try {
+          const contactCol = window.require('WAWebCollections')?.Contact;
+          const widFactory = window.require('WAWebWidFactory');
+
+          const getName = (c) => {
+            if (!c) return null;
+            const n = c.pushname || c.name || c.formattedTitle || c.formattedName || c.displayName;
+            if (n && typeof n === 'string' && n.trim() && n.trim() !== id && n.trim() !== numId) {
+              return n.trim();
+            }
+            return null;
+          };
+
+          // 1. Try direct WID lookup
+          if (widFactory && contactCol) {
+            const wid = id.includes('@') ? widFactory.createWid(id) : widFactory.createWid(`${id}@c.us`);
+            const c = contactCol.get(wid) || (contactCol.find && contactCol.find(wid));
+            const n = getName(c);
+            if (n) return n;
+          }
+
+          // 2. Try searching contact collection
+          if (contactCol && typeof contactCol.getModelsArray === 'function') {
+            const all = contactCol.getModelsArray();
+            const found = all.find(c => {
+              const sId = c.id?._serialized || '';
+              const user = c.id?.user || '';
+              return sId === id || user === numId || sId.includes(numId) || sId.includes(id);
+            });
+            const n = getName(found);
+            if (n) return n;
+          }
+
+          // 3. Try checking group metadata participants if chatId provided
+          if (cId) {
+            const chatCol = window.require('WAWebCollections')?.Chat;
+            const chat = chatCol?.get(cId) || (widFactory && chatCol?.get(widFactory.createWid(cId)));
+            if (chat && chat.groupMetadata && chat.groupMetadata.participants) {
+              const parts = chat.groupMetadata.participants.getModelsArray ? chat.groupMetadata.participants.getModelsArray() : chat.groupMetadata.participants;
+              const p = Array.isArray(parts) ? parts.find(p => (p.id?._serialized || '').includes(numId)) : null;
+              if (p && p.contact) {
+                const n = getName(p.contact);
+                if (n) return n;
+              }
+            }
+          }
+        } catch (_) { }
+        return null;
+      }, rawId, chatId, cleanId);
+
+      if (result) return result;
+    }
+
+    // Try client.getContactById
+    try {
+      const fullJid = rawId.includes('@') ? rawId : `${rawId}@c.us`;
+      const c = await client.getContactById(fullJid);
+      if (c && (c.pushname || c.name || c.shortName)) {
+        const n = c.pushname || c.name || c.shortName;
+        if (n && n !== cleanId && n !== rawId) return n;
+      }
+    } catch (_) { }
+  } catch (err) {
+    // ignore
+  }
+  return null;
+}
+
+async function findQuotedMsgFromWA(chatId, stanzaId) {
+  if (!client.pupPage || !stanzaId) return null;
+  try {
+    return await client.pupPage.evaluate((cId, sId) => {
       try {
-        const contact = window.require('WAWebCollections')?.Contact?.get(id);
-        if (contact) return contact.pushname || contact.name || contact.formattedName || contact.number || id;
+        const chatCol = window.require('WAWebCollections')?.Chat;
+        const msgCol = window.require('WAWebCollections')?.Msg;
+        let msg = null;
+
+        if (msgCol && typeof msgCol.getModelsArray === 'function') {
+          msg = msgCol.getModelsArray().find(m => m.id?.id === sId || m.id?._serialized?.includes(sId));
+        }
+
+        if (!msg && chatCol) {
+          const chat = chatCol.get(cId);
+          if (chat && chat.msgs && typeof chat.msgs.getModelsArray === 'function') {
+            msg = chat.msgs.getModelsArray().find(m => m.id?.id === sId || m.id?._serialized?.includes(sId));
+          }
+        }
+
+        if (msg) {
+          const author = msg.author?._serialized || msg.from?._serialized || msg.id?.participant?._serialized || '';
+          const body = msg.body || msg.caption || msg.text || '';
+          const notifyName = msg.notifyName || msg.sender?.pushname || msg.sender?.name || '';
+          return {
+            id: msg.id?._serialized || sId,
+            stanzaId: msg.id?.id || sId,
+            text: body,
+            sender: notifyName,
+            author: author,
+            timestamp: msg.t || Math.floor(Date.now() / 1000),
+          };
+        }
       } catch (_) { }
       return null;
-    }, jid);
-  } catch (err) {
+    }, chatId, stanzaId);
+  } catch (_) {
     return null;
+  }
+}
+
+async function fetchRecentChatMessages(chatId, limit = 30) {
+  if (!client.pupPage) return [];
+  try {
+    return await client.pupPage.evaluate((id, maxCount) => {
+      try {
+        const chatCol = window.require('WAWebCollections')?.Chat;
+        const widFactory = window.require('WAWebWidFactory');
+        const wid = widFactory ? (id.includes('@') ? widFactory.createWid(id) : widFactory.createWid(`${id}@g.us`)) : id;
+
+        let chat = chatCol?.get(wid) || chatCol?.get(id);
+        if (!chat && chatCol?.find) {
+          try { chat = chatCol.find(wid) || chatCol.find(id); } catch (_) { }
+        }
+        if (!chat && chatCol?.getModelsArray) {
+          chat = chatCol.getModelsArray().find(c => c.id?._serialized === id);
+        }
+        if (!chat || !chat.msgs) return [];
+
+        let msgs = [];
+        if (typeof chat.msgs.getModelsArray === 'function') {
+          msgs = chat.msgs.getModelsArray();
+        } else if (Array.isArray(chat.msgs.models)) {
+          msgs = chat.msgs.models;
+        } else if (Array.isArray(chat.msgs)) {
+          msgs = chat.msgs;
+        }
+
+        const validMsgs = msgs.filter(m => {
+          if (!m || m.isNotification || m.type === 'notification_template' || m.type === 'gp2' || m.type === 'protocol' || m.type === 'e2e_notification' || m.type === 'reaction') {
+            return false;
+          }
+          return true;
+        });
+
+        validMsgs.sort((a, b) => (a.t || 0) - (b.t || 0));
+        const sliced = validMsgs.slice(-maxCount);
+
+        return sliced.map(m => {
+          const author = m.author?._serialized || m.author || m.from?._serialized || m.from || m.id?.participant?._serialized || '';
+          const body = m.body || m.caption || m.text || m.pollName || '';
+          const notifyName = m.notifyName || m.sender?.pushname || m.sender?.name || m.sender?.formattedName || '';
+          return {
+            id: m.id?._serialized || m.id?.id || String(m.id || ''),
+            stanzaId: m.id?.id || '',
+            author: typeof author === 'string' ? author : '',
+            sender: typeof notifyName === 'string' ? notifyName : '',
+            text: typeof body === 'string' ? body : '',
+            timestamp: m.t || Math.floor(Date.now() / 1000),
+          };
+        });
+      } catch (err) {
+        return [];
+      }
+    }, chatId, limit);
+  } catch (err) {
+    return [];
+  }
+}
+
+async function primeChatHistory(chatId, groupName = '') {
+  try {
+    const rawMessages = await fetchRecentChatMessages(chatId, 30);
+    if (rawMessages && rawMessages.length > 0) {
+      if (!groupHistories[chatId]) groupHistories[chatId] = [];
+      for (const m of rawMessages) {
+        const text = (m.text || '').trim();
+        if (!text) continue;
+
+        let sender = m.sender;
+        const author = m.author;
+        if (!sender && author) {
+          sender = await getContactName(author, chatId);
+        }
+        if (!sender) {
+          sender = author ? author.replace(/@.*$/, '') : 'Unknown';
+        }
+
+        const msgObj = {
+          id: m.id || `${Date.now()}-${Math.random()}`,
+          stanzaId: m.stanzaId || m.id,
+          sender: sender,
+          author: author,
+          text: text,
+          timestamp: m.timestamp || Math.floor(Date.now() / 1000),
+        };
+
+        const existingIdx = groupHistories[chatId].findIndex(h =>
+          isSameMessage(h, msgObj.id, msgObj.stanzaId)
+        );
+        if (existingIdx !== -1) {
+          groupHistories[chatId][existingIdx] = msgObj;
+        } else {
+          groupHistories[chatId].push(msgObj);
+        }
+      }
+
+      groupHistories[chatId].sort((a, b) => a.timestamp - b.timestamp);
+      if (groupHistories[chatId].length > 50) {
+        groupHistories[chatId] = groupHistories[chatId].slice(-50);
+      }
+      const label = groupName || activeGroups[chatId]?.name || chatId;
+      console.log(`📥 Loaded ${groupHistories[chatId].length} recent message(s) for "${label}"`);
+    }
+  } catch (err) {
+    // Non-critical, just keep memory state
   }
 }
 
@@ -441,7 +745,9 @@ async function listAllGroups() {
           return [];
         }
       });
-      if (groups && groups.length > 0) return groups;
+      if (groups && groups.length > 0) {
+        return groups.map(g => ({ ...g, id: normalizeJid(g.id) }));
+      }
     }
 
     if (typeof client.getChats === 'function') {
@@ -449,7 +755,7 @@ async function listAllGroups() {
       return (chats || [])
         .filter(c => c && c.isGroup)
         .map(c => ({
-          id: c.id?._serialized || c.id,
+          id: normalizeJid(c.id?._serialized || c.id),
           name: (c.name || '').trim(),
         }));
     }
@@ -465,6 +771,50 @@ async function findGroupByName(targetName) {
   return groups.find(g => g.name.toLowerCase() === normalizedTarget) || null;
 }
 
+let syncCheckInterval = null;
+
+function startSyncWatchdog() {
+  if (syncCheckInterval) return;
+  let attempts = 0;
+  syncCheckInterval = setInterval(async () => {
+    attempts++;
+    if (!client.pupPage || client.pupPage.isClosed()) {
+      if (attempts > 60) {
+        clearInterval(syncCheckInterval);
+        syncCheckInterval = null;
+      }
+      return;
+    }
+
+    try {
+      const triggered = await client.pupPage.evaluate(() => {
+        try {
+          const socket = window.require('WAWebSocketModel')?.Socket;
+          const chatCol = window.require('WAWebCollections')?.Chat;
+          const hasChats = Boolean(chatCol && typeof chatCol.getModelsArray === 'function' && chatCol.getModelsArray().length > 0);
+          const isReady = socket && (socket.state === 'CONNECTED' || socket.hasSynced === true);
+
+          if ((isReady || hasChats) && typeof window.onAppStateHasSyncedEvent === 'function') {
+            window.onAppStateHasSyncedEvent();
+            return true;
+          }
+        } catch (_) { }
+        return false;
+      });
+
+      if (triggered) {
+        clearInterval(syncCheckInterval);
+        syncCheckInterval = null;
+      }
+    } catch (_) { }
+
+    if (attempts >= 40) {
+      clearInterval(syncCheckInterval);
+      syncCheckInterval = null;
+    }
+  }, 1200);
+}
+
 // ============================================================================
 // EVENT HANDLERS
 // ============================================================================
@@ -477,20 +827,28 @@ client.on('qr', qr => {
 client.on('authenticated', () => {
   console.log('✅ WhatsApp authenticated successfully');
   console.log('⏳ Syncing WhatsApp messages & chats, please wait...');
+  startSyncWatchdog();
 });
 
 client.on('loading_screen', (percent, message) => {
   console.log(`⏳ WhatsApp loading: ${percent}% - ${message}`);
-  if (percent === 99 || percent === 100) {
-    console.log('⏳ Finalizing chat sync & initializing listeners...');
+  if (percent >= 90) {
+    startSyncWatchdog();
   }
 });
 
 client.on('change_state', state => {
   console.log(`🔄 WhatsApp state: ${state}`);
+  if (state === 'CONNECTED') {
+    startSyncWatchdog();
+  }
 });
 
 client.on('ready', async () => {
+  if (syncCheckInterval) {
+    clearInterval(syncCheckInterval);
+    syncCheckInterval = null;
+  }
   console.log(`Connected. Looking for groups: ${CONFIG.groups.map(g => `"${g}"`).join(', ')}...`);
   await new Promise(r => setTimeout(r, 2500));
 
@@ -501,6 +859,7 @@ client.on('ready', async () => {
         activeGroups[group.id] = { name: groupName, id: group.id };
         groupHistories[group.id] = [];
         console.log(`✔ Found group "${groupName}" (ID: ${group.id})`);
+        await primeChatHistory(group.id, groupName);
       } else {
         console.warn(`⚠ Group not found: ${groupName}`);
       }
@@ -511,7 +870,7 @@ client.on('ready', async () => {
 
   console.log(`\n========================================================`);
   console.log(`Ready! Monitoring ${Object.keys(activeGroups).length} group(s)`);
-  console.log(`To raise a ticket: Reply to any message in a monitored group with "/raise"`);
+  console.log(`To raise a ticket: Reply with "raise" / "/raise" OR type "raise <issue text>" / "/raise <issue text>"`);
   console.log(`========================================================\n`);
 });
 
@@ -526,12 +885,10 @@ client.on('message_create', async msg => {
       return;
     }
 
-    const isGroup = (typeof msg.from === 'string' && msg.from.endsWith('@g.us')) || (typeof msg.to === 'string' && msg.to.endsWith('@g.us'));
-    if (!isGroup) return;
+    const chatId = getMsgChatId(msg);
+    if (!chatId || !chatId.endsWith('@g.us')) return;
 
     if (CONFIG.ignoreOwnMessages && msg.fromMe) return;
-
-    const chatId = msg.fromMe ? msg.to : msg.from;
 
     // Dynamically detect configured group if not yet in activeGroups
     if (!activeGroups[chatId]) {
@@ -545,6 +902,7 @@ client.on('message_create', async msg => {
             activeGroups[chatId] = { name: chat.name, id: chatId };
             if (!groupHistories[chatId]) groupHistories[chatId] = [];
             console.log(`✔ Dynamically detected configured group "${chat.name}" (ID: ${chatId})`);
+            await primeChatHistory(chatId, chat.name);
           }
         }
       } catch (_) { }
@@ -557,42 +915,60 @@ client.on('message_create', async msg => {
 
     if (!groupHistories[chatId]) groupHistories[chatId] = [];
 
+    const authorJid = msg.author || (msg.fromMe ? (client.info?.wid?._serialized || msg.from) : msg.from);
     let senderName = msg._data?.notifyName || msg._data?.pushname;
+    if (!senderName && authorJid) {
+      senderName = await getContactName(authorJid, chatId);
+    }
+    if (!senderName && msg.fromMe && client.info?.pushname) {
+      senderName = client.info.pushname;
+    }
     if (!senderName) {
-      senderName = msg.author ? msg.author.replace(/@.*$/, '') : (msg.from ? msg.from.replace(/@.*$/, '') : 'Unknown');
+      senderName = authorJid ? String(authorJid).replace(/@.*$/, '') : (msg.fromMe ? 'Bot' : 'Unknown');
     }
 
-    const trimmedBody = (msg.body || '').trim();
+    const rawBody = extractMessageText(msg);
+    const trimmedBody = rawBody.trim();
 
-    // Record to history
-    const msgObj = {
-      id: msg.id?._serialized || `${Date.now()}-${Math.random()}`,
-      sender: senderName,
-      text: trimmedBody,
-      timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
-    };
-    groupHistories[chatId].push(msgObj);
-    if (groupHistories[chatId].length > 50) groupHistories[chatId].shift();
+    // Record to history if it has text
+    if (trimmedBody) {
+      const msgObj = {
+        id: msg.id?._serialized || `${Date.now()}-${Math.random()}`,
+        stanzaId: msg.id?.id || msg._data?.id?.id,
+        sender: senderName,
+        author: authorJid,
+        text: trimmedBody,
+        timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+      };
+      const existingIdx = groupHistories[chatId].findIndex(m =>
+        isSameMessage(m, msgObj.id, msgObj.stanzaId)
+      );
+      if (existingIdx !== -1) {
+        groupHistories[chatId][existingIdx] = msgObj;
+      } else {
+        groupHistories[chatId].push(msgObj);
+      }
+      if (groupHistories[chatId].length > 50) groupHistories[chatId].shift();
+    }
 
     // Check for configured commands
-    const matchedCommand = CONFIG.commands.find(cmd =>
-      trimmedBody.toLowerCase() === cmd || trimmedBody.toLowerCase().startsWith(cmd + ' ')
-    );
+    const match = matchCommand(trimmedBody);
 
-    if (!matchedCommand) {
-      console.log(`[MSG] "${chatName}" | ${senderName}: "${trimmedBody.slice(0, 50)}"`);
+    if (!match) {
+      console.log(`[MSG] "${chatName}" | ${senderName}: "${trimmedBody.slice(0, 60)}"`);
       return;
     }
 
-    console.log(`\n🎯 [RAISE COMMAND] from ${senderName} in "${chatName}"`);
+    const matchedCommand = match.command;
+    const commandArgText = match.argText;
+    const hasQuoted = Boolean(msg.hasQuotedMsg || msg._data?.quotedMsg);
 
-    const raiserNotes = trimmedBody.slice(matchedCommand.length).trim();
-
-    if (!msg.hasQuotedMsg && !msg._data?.quotedMsg) {
-      console.log(`ℹ Command sent without reply - instructing user`);
+    // If neither reply nor issue text was given, instruct the user
+    if (!hasQuoted && !commandArgText) {
+      console.log(`ℹ Command sent without reply or issue text - instructing user`);
       if (CONFIG.confirmInGroup) {
         try {
-          await msg.reply('ℹ *To raise a ticket:* Please reply directly to the message describing the issue with `/raise`.');
+          await msg.reply('ℹ *To raise a ticket:*\n• Reply directly to any issue message with `raise` or `/raise`\n• Or type `raise <describe your issue here>` (or `/raise <issue>`)');
         } catch (err) {
           console.warn('Failed to send WhatsApp reply:', err.message);
         }
@@ -600,53 +976,110 @@ client.on('message_create', async msg => {
       return;
     }
 
-    // Extract quoted message
     let quotedText = '';
-    let quotedSender = 'Unknown';
+    let quotedSender = '';
     let quotedTimestamp = msg.timestamp || Math.floor(Date.now() / 1000);
     let quotedId = null;
+    let quotedStanzaId = msg._data?.quotedStanzaID || msg._data?.quotedMsg?.id?.id || null;
+    let quotedParticipant = msg._data?.quotedParticipant || null;
+    let raiserNotes = '';
 
-    if (msg.hasQuotedMsg) {
-      try {
-        const quoted = await msg.getQuotedMessage();
-        if (quoted) {
-          quotedText = quoted.body || quoted.caption || '';
-          quotedId = quoted.id?._serialized;
-          quotedTimestamp = quoted.timestamp || quotedTimestamp;
+    if (hasQuoted) {
+      // MODE 1: Reply to an issue message
+      raiserNotes = commandArgText;
+      console.log(`\n🎯 [RAISE (REPLY)] from ${senderName} in "${chatName}"`);
 
-          const authorJid = quoted.author || quoted.from;
-          let contactName = authorJid ? await getContactName(authorJid) : null;
-          if (!contactName) {
-            contactName = quoted._data?.notifyName || quoted._data?.pushname || (authorJid ? authorJid.replace(/@.*$/, '') : 'Unknown');
+      if (msg.hasQuotedMsg) {
+        try {
+          const quoted = await msg.getQuotedMessage();
+          if (quoted) {
+            quotedText = extractMessageText(quoted).trim();
+            quotedId = quoted.id?._serialized || quotedId;
+            quotedStanzaId = quoted.id?.id || quotedStanzaId;
+            quotedTimestamp = quoted.timestamp || quotedTimestamp;
+            quotedParticipant = quoted.author || quoted.from || quotedParticipant;
+            quotedSender = quoted._data?.notifyName || quoted._data?.pushname || '';
           }
-          quotedSender = contactName;
+        } catch (err) {
+          // getQuotedMessage failed, will fallback below
         }
-      } catch (err) {
-        console.warn('getQuotedMessage failed:', err.message);
       }
-    }
 
-    if (!quotedText && msg._data?.quotedMsg) {
-      const rawQ = msg._data.quotedMsg;
-      quotedText = rawQ.body || rawQ.caption || '';
-      quotedSender = rawQ.notifyName || rawQ.pushname || (msg._data.quotedParticipant ? msg._data.quotedParticipant.replace(/@.*$/, '') : 'Unknown');
-      quotedId = rawQ.id?._serialized || msg._data.quotedStanzaID;
-    }
-
-    if (!quotedText && quotedId) {
-      const match = groupHistories[chatId].find(m => m.id === quotedId);
-      if (match) {
-        quotedText = match.text;
-        quotedSender = match.sender;
-        quotedTimestamp = match.timestamp;
+      // Fallback 1: Raw quotedMsg object from message data
+      if ((!quotedText || !quotedSender) && msg._data?.quotedMsg) {
+        const rawQ = msg._data.quotedMsg;
+        if (!quotedText) {
+          quotedText = extractMessageText(rawQ).trim();
+        }
+        if (!quotedId) {
+          quotedId = rawQ.id?._serialized || msg._data.quotedStanzaID;
+        }
+        if (!quotedStanzaId) {
+          quotedStanzaId = rawQ.id?.id || msg._data.quotedStanzaID;
+        }
+        if (!quotedSender) {
+          quotedSender = rawQ.notifyName || rawQ.pushname || '';
+        }
+        if (!quotedParticipant) {
+          quotedParticipant = msg._data.quotedParticipant || rawQ.author || rawQ.from;
+        }
       }
+
+      // Fallback 2: Direct lookup in WhatsApp Web store
+      if ((!quotedText || !quotedSender) && quotedStanzaId) {
+        const waMsg = await findQuotedMsgFromWA(chatId, quotedStanzaId);
+        if (waMsg) {
+          if (!quotedText) quotedText = waMsg.text?.trim() || '';
+          if (!quotedSender) quotedSender = waMsg.sender;
+          if (!quotedParticipant) quotedParticipant = waMsg.author;
+          if (waMsg.timestamp) quotedTimestamp = waMsg.timestamp;
+          if (waMsg.id && !quotedId) quotedId = waMsg.id;
+        }
+      }
+
+      // Fallback 3: Search in local group history
+      const historyMatch = groupHistories[chatId]?.find(m =>
+        isSameMessage(m, quotedId, quotedStanzaId, quotedText)
+      );
+      if (historyMatch) {
+        if (!quotedText) quotedText = historyMatch.text;
+        if (!quotedSender || isNumericOrId(quotedSender)) {
+          if (historyMatch.sender && !isNumericOrId(historyMatch.sender)) {
+            quotedSender = historyMatch.sender;
+          }
+        }
+        if (historyMatch.timestamp) quotedTimestamp = historyMatch.timestamp;
+        if (historyMatch.id && !quotedId) quotedId = historyMatch.id;
+        if (historyMatch.author && !quotedParticipant) quotedParticipant = historyMatch.author;
+      }
+
+      // Resolve reporter name if it is still a phone number / LID or empty
+      if ((!quotedSender || isNumericOrId(quotedSender)) && quotedParticipant) {
+        const resolvedName = await getContactName(quotedParticipant, chatId);
+        if (resolvedName) {
+          quotedSender = resolvedName;
+        }
+      }
+
+      if (!quotedSender) {
+        quotedSender = quotedParticipant ? quotedParticipant.replace(/@.*$/, '') : 'Unknown';
+      }
+    } else {
+      // MODE 2: Direct raise command with issue text (/raise <issue>)
+      quotedText = commandArgText;
+      quotedSender = senderName;
+      quotedId = msg.id?._serialized || null;
+      quotedStanzaId = msg.id?.id || msg._data?.id?.id || null;
+      quotedTimestamp = msg.timestamp || Math.floor(Date.now() / 1000);
+      raiserNotes = '';
+      console.log(`\n🎯 [RAISE (DIRECT)] from ${senderName} in "${chatName}": "${quotedText.slice(0, 60)}"`);
     }
 
     if (!quotedText) {
-      console.warn('⚠ Could not retrieve quoted message text');
+      console.warn('⚠ Could not retrieve issue text');
       if (CONFIG.confirmInGroup) {
         try {
-          await msg.reply('⚠ Could not read the original message. Please try replying with `/raise` again.');
+          await msg.reply('⚠ Could not read the issue text. Please try again with `raise <issue description>` or reply to the message.');
         } catch (err) {
           console.warn('Failed to send WhatsApp reply:', err.message);
         }
@@ -657,21 +1090,56 @@ client.on('message_create', async msg => {
     console.log(`📌 Issue from ${quotedSender}: "${quotedText.slice(0, 60)}"`);
     if (raiserNotes) console.log(`📝 Raiser note: "${raiserNotes}"`);
 
-    // Gather context
-    let contextMessages = [];
-    if (quotedId) {
-      const quotedIndex = groupHistories[chatId].findIndex(m => m.id === quotedId);
-      if (quotedIndex > 0) {
-        const start = Math.max(0, quotedIndex - CONFIG.contextMessagesCount);
-        contextMessages = groupHistories[chatId].slice(start, quotedIndex);
-      }
-    }
-    if (contextMessages.length === 0 && groupHistories[chatId].length > 1) {
-      const beforeRaise = groupHistories[chatId].slice(0, -1);
-      contextMessages = beforeRaise.slice(-CONFIG.contextMessagesCount);
+    // Ensure recent history is loaded for context
+    if (groupHistories[chatId].length < 2) {
+      await primeChatHistory(chatId, chatName);
     }
 
+    // Gather context messages preceding the issue / command
+    let quotedIndex = -1;
+    if (hasQuoted) {
+      quotedIndex = groupHistories[chatId].findIndex(m =>
+        isSameMessage(m, quotedId, quotedStanzaId, quotedText)
+      );
+    } else {
+      quotedIndex = groupHistories[chatId].findIndex(m =>
+        isSameMessage(m, quotedId, quotedStanzaId, trimmedBody)
+      );
+    }
+
+    let contextMessages = [];
+    if (quotedIndex > 0) {
+      const start = Math.max(0, quotedIndex - CONFIG.contextMessagesCount);
+      contextMessages = groupHistories[chatId].slice(start, quotedIndex);
+    } else if (quotedIndex === 0) {
+      contextMessages = [];
+    } else {
+      const nonRaise = groupHistories[chatId].filter(m => {
+        const t = (m.text || '').trim();
+        const isRaise = isCommandMessage(t);
+        const isBotResponse = t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖');
+        const isQuotedText = quotedText && t.toLowerCase() === quotedText.toLowerCase().trim();
+        return !isRaise && !isBotResponse && !isQuotedText && t.length > 0;
+      });
+      contextMessages = nonRaise.slice(-CONFIG.contextMessagesCount);
+    }
+
+    // Filter out invalid or command messages from context
+    contextMessages = contextMessages.filter(m => {
+      if (!m || !m.text || !m.text.trim()) return false;
+      const t = m.text.trim();
+      if (isCommandMessage(t)) return false;
+      if (t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖')) return false;
+      if (quotedText && t.toLowerCase() === quotedText.toLowerCase().trim()) return false;
+      return true;
+    });
+
     console.log(`📎 Gathered ${contextMessages.length} context message(s)`);
+    if (contextMessages.length > 0) {
+      contextMessages.forEach((c, idx) => {
+        console.log(`   [${idx + 1}] ${c.sender}: "${c.text.slice(0, 50)}"`);
+      });
+    }
 
     // Clean the issue text by removing "reported by" patterns
     const cleanedQuotedText = cleanIssueText(quotedText);
@@ -716,6 +1184,28 @@ client.on('disconnected', reason => {
     console.log('Reconnecting...');
     client.initialize().catch(err => console.error('Reconnection failed:', err.message));
   }, 5000);
+});
+
+// ============================================================================
+// PROCESS TERMINATION & CLEANUP
+// ============================================================================
+
+process.on('SIGINT', async () => {
+  console.log('\nGracefully shutting down WhatsApp Ticket Bot...');
+  if (syncCheckInterval) clearInterval(syncCheckInterval);
+  try {
+    await client.destroy();
+  } catch (_) { }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\nShutting down...');
+  if (syncCheckInterval) clearInterval(syncCheckInterval);
+  try {
+    await client.destroy();
+  } catch (_) { }
+  process.exit(0);
 });
 
 // ============================================================================
