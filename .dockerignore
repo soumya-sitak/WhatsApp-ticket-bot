@@ -1,0 +1,47 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+# package-lock.json is needed for npm ci in Docker build
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Session & Cache
+wa-session/
+.wwebjs_cache/
+.wwebjs_auth/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# PM2
+.pm2/
+
+# Documentation
+README.md
+DEPLOYMENT.md
+*.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+tickets.csv
+*.csv
