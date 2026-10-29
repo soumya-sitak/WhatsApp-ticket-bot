@@ -39,10 +39,12 @@ async function summarize({ reportedText, reporterName, raiserName, raiserNotes, 
 
   const userPrompt =
     `[BACKGROUND CONTEXT]\n${contextStr}\n\n` +
-    `[REPORTED ISSUE]\n` +
+    `[REPORTED WHATSAPP MESSAGE]\n${reportedText}\n\n` +
+    `[ISSUE DESCRIPTION FROM TICKET RAISER${/^\[(?:image\/)?media attachment(?: \(download failed\))?\]$/i.test((reportedText || '').trim()) ? ' — PRIMARY ISSUE DESCRIPTION' : ''}]\n` +
+    (raiserNotes ? `${raiserNotes}\n` : '(No additional issue description)\n') +
+    `\n[REPORTER DETAILS]\n` +
     `Reported by: ${reporterName}\n` +
-    `Issue: "${reportedText}"\n` +
-    (raiserNotes ? `Raiser Note: "${raiserNotes}" (raised by ${raiserName})\n` : '');
+    `Ticket raised by: ${raiserName}\n`;
 
   try {
     logger.info(`🤖 AI summarizing issue with ${contextMessages?.length || 0} context message(s)...`);
