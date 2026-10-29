@@ -31,15 +31,17 @@ function extractMessageText(msg) {
     msg.pollName ||
     '';
 
-  if (typeof candidate !== 'string') return '';
+  if (!candidate) return '';
+  if (typeof candidate !== 'string') return String(candidate);
 
-  // Prevent binary/Base64 data from being treated as text
-  // Base64 image headers usually start with /9j/ or iVBOR
-  if (candidate.startsWith('/9j/') || candidate.startsWith('iVBOR')) {
+  // CRITICAL: Filter out Base64 binary data.
+  // JPEGs start with /9j/, PNGs start with iVBOR
+  const trimmed = candidate.trim();
+  if (trimmed.startsWith('/9j/') || trimmed.startsWith('iVBOR') || trimmed.length > 1000 && !trimmed.includes(' ')) {
     return '';
   }
 
-  return candidate;
+  return trimmed;
 }
 
 function isNumericOrId(str) {

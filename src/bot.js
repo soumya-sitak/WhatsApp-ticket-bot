@@ -154,18 +154,26 @@ async function processRaiseCommand({
     }
 
     // ENSURE we have text for the ticket, even if the message is ONLY an image
-    if (!quotedText && hasQuoted) {
-      // If it's an image, check if it has a caption
-      const quotedMsgObj = msg.hasQuotedMsg
-        ? await msg.getQuotedMessage()
-        : (msg._data?.quotedMsg || await waService.findQuotedMsgFromWA(chatId, quotedStanzaId));
+    if (!quotedText || quotedText.startsWith('/9j/') || quotedText.startsWith('iVBOR')) {
+      if (hasQuoted) {
+        try {
+          const quotedMsgObj = msg.hasQuotedMsg
+            ? await msg.getQuotedMessage()
+            : (msg._data?.quotedMsg || await waService.findQuotedMsgFromWA(chatId, quotedStanzaId));
 
-      if (quotedMsgObj) {
-        const caption = extractMessageText(quotedMsgObj).trim();
-        if (caption) {
-          quotedText = caption;
-        } else if (reportedAttachment) {
-          quotedText = `[Image/Media Attachment]`;
+          if (quotedMsgObj) {
+            const caption = extractMessageText(quotedMsgObj).trim();
+            if (caption && !caption.startsWith('/9j/') && !caption.startsWith('iVBOR')) {
+              quotedText = caption;
+            } else if (reportedAttachment) {
+              quotedText = `[Image/Media Attachment]`;
+            } else {
+              quotedText = `[Media Attachment (Download Failed)]`;
+            }
+          }
+        } catch (e) {
+          logger.warn(`Failed to retrieve caption for image-only ticket: ${e.message}`);
+          quotedText = reportedAttachment ? `[Image/Media Attachment]` : `[Media Attachment]`;
         }
       }
     }
