@@ -1,297 +1,96 @@
 # WhatsApp Ticket Bot 🎟️
 
-**Production-grade WhatsApp group monitoring bot** that creates support tickets via email when team members raise issues with `/raise` command.
+A professional WhatsApp group monitoring bot that automatically converts issue reports into support tickets via email.
 
-## Features
+## 🚀 Quick Start
 
-✅ **Multi-group monitoring** - Monitor multiple WhatsApp groups  
-✅ **AI-powered summaries** - Auto-generate ticket subjects & summaries  
-✅ **Email routing** - Send to multiple recipients with CC/BCC  
-✅ **Persistent logging** - Structured logs with file rotation  
-✅ **Graceful shutdown** - Clean resource cleanup  
-✅ **Auto-restart** - PM2 process manager integration  
-✅ **Retry logic** - Exponential backoff for API calls  
-✅ **Production-ready** - Security, error handling, monitoring  
+### 1. Prerequisites
+- **Node.js 16+** installed.
+- **Ollama** installed and running locally (for AI summaries).
+- **Gmail Account** with an [App Password](https://support.google.com/accounts/answer/185833?hl=en) (standard passwords won't work).
 
----
-
-## Quick Start
-
-### Prerequisites
-- Node.js 16+
-- npm or yarn
-- Gmail account with app password
-- OmniRoute/Ollama (for AI, optional)
-
-### Installation
-
+### 2. Installation
 ```bash
-# Clone/Setup
+# Clone the repository and enter the folder
 cd whatsapp-ticket-bot
 
 # Install dependencies
 npm install
 
-# Setup environment
+# Setup environment variables
 cp .env.example .env
-# Edit .env with your values
 ```
 
-### First Run (Scan QR Code)
+### 3. Configuration
+Open the `.env` file and fill in your details:
+- **WhatsApp**: Add the names of the groups you want to monitor in `WHATSAPP_GROUPS` (comma-separated).
+- **Email**: Enter your Gmail address and the **App Password**.
+- **AI**: Ensure `AI_ENABLED=true` and `AI_BASE_URL` points to your local Ollama/OmniRoute instance (e.g., `http://localhost:20128/v1`).
 
+### 4. First Run (Scan QR Code)
 ```bash
-npm run start
+npm start
 ```
+1. A **QR code** will appear in your terminal.
+2. Open WhatsApp on your phone $\rightarrow$ **Linked Devices** $\rightarrow$ **Link a Device**.
+3. Scan the code. The bot is now active!
 
-Scan the QR code with WhatsApp on your phone (Linked Devices).
-
-### Production Deployment
-
+### 5. Production Deployment (Optional)
+To keep the bot running in the background forever:
 ```bash
-# Install PM2 globally
 npm install -g pm2
-
-# Start with PM2
 pm2 start pm2.config.js --env production
-
-# Auto-start on reboot
 pm2 startup
 pm2 save
-
-# Monitor
-pm2 monit
-pm2 logs
 ```
 
 ---
 
-## Configuration
+## 🛠 How to Use
 
-Copy `.env.example` to `.env` and fill in your values:
+Once the bot is running, you can raise tickets in any monitored group using these methods:
 
-```env
-# WhatsApp Groups (comma-separated)
-GROUPS=test,engineering,ops-alerts
+### Method A: Reply to a Message (Recommended)
+- Find a message describing an issue $\rightarrow$ **Reply** to it with `/raise`.
+- The bot captures the original issue, the reporter's name, and the conversation context.
 
-# Gmail SMTP
-MAIL_USER=your-email@gmail.com
-MAIL_PASS=your-app-password
-MAIL_TO=team@example.com
-MAIL_CC=manager@example.com
+### Method B: Direct Command
+- Type `/raise <describe your issue here>` directly in the group.
+- Example: `/raise Server is lagging since 10 AM`.
 
-# AI Summarization (Optional)
-AI_ENABLED=true
-AI_BASE_URL=http://localhost:20128/v1
-AI_MODEL=omni
-AI_API_KEY=sk-xxx
+### Method C: Edit a Message
+- If you forgot to add `/raise`, simply **edit** your message to start with `/raise`. The bot will detect the edit and create the ticket.
 
-# Logging
-LOG_LEVEL=info
-LOG_DIR=./logs
+---
+
+## ⚙️ Technical Details
+
+### Project Structure
+```text
+src/
+├── bot.js            # Main entry point & event coordinator
+├── config.js         # Environment & Prompt configuration
+├── logger.js         # Structured JSON logging
+├── utils/
+│   └── wa-utils.js   # WhatsApp data helpers
+└── services/
+    ├── ai.service.js    # AI summarization logic
+    ├── mail.service.js # Email dispatch & templates
+    ├── csv.service.js   # Ticket logging to CSV
+    └── wa.service.js    # WhatsApp Client wrapper
 ```
 
-[Full config options in `.env.example`]
+### Monitoring & Logs
+- **Live Logs**: `pm2 logs whatsapp-ticket-bot`
+- **Resource Monitor**: `pm2 monit`
+- **Daily Logs**: Check the `./logs/` folder for daily JSON log files.
 
 ---
 
-## Usage
-
-### Raising a Ticket
-
-There are two ways to raise a ticket in any monitored group:
-
-#### Method 1: Reply to an Issue Message
-1. Reply directly to any message describing an issue with `/raise` (or `/raise P1 urgent please check`).
-2. The bot extracts the quoted issue, captures preceding context messages, and creates the ticket with the original author as the reporter.
-
-#### Method 2: Direct Issue Command
-1. Send `/raise <describe your issue here>` directly in the group (e.g. `/raise Dashboard data delayed since 2pm`).
-2. The bot creates a ticket from your text and captures preceding messages from the group as context.
-
-#### Method 3: Message Edits
-- If you posted an issue description (or a reply) and forgot to add `/raise` or had a typo, simply edit your message so it starts with `/raise`. The bot listens for edited messages and triggers ticket creation automatically while preventing duplicate tickets.
-
-### Commands
-
-- `raise` / `/raise [optional text]` - Create ticket from quoted message or directly from text
-- `ticket` / `/ticket [optional text]` - Alias for `raise` / `/raise`
-- `!raise [optional text]` - Alternative prefix
-- `!ticket [optional text]` - Alternative prefix
-
----
-
-## Monitoring
-
-### View Logs
-
-```bash
-# Live logs
-pm2 logs whatsapp-ticket-bot
-
-# Last 100 lines
-pm2 logs whatsapp-ticket-bot --lines 100
-
-# Errors only
-pm2 logs whatsapp-ticket-bot --err
-```
-
-### Monitor Resources
-
-```bash
-pm2 monit
-```
-
-### Check Status
-
-```bash
-pm2 status
-```
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Bot crashes on startup | Check `.env` - verify all required vars are set |
-| QR code not appearing | Ensure WhatsApp Web is accessible; check logs |
-| Emails not sending | Verify Gmail app password in `.env`; check firewall |
-| AI summarization failing | Ensure OmniRoute is running or set `AI_ENABLED=false` |
-| WhatsApp session invalid | Delete `wa-session/` folder and rescan QR code |
-
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for complete troubleshooting guide.
-
----
-
-## Project Structure
-
-```
-whatsapp-ticket-bot/
-├── whatsapp-mail-bridge.js    # Main bot (production version)
-├── pm2.config.js              # PM2 process manager config
-├── package.json               # Dependencies & scripts
-├── .env.example               # Environment template
-├── .gitignore                 # Git ignore rules
-├── DEPLOYMENT.md              # Deployment guide
-├── README.md                  # This file
-├── src/
-│   └── logger.js              # Structured logging module
-├── logs/                      # Log files (git ignored)
-├── wa-session/                # WhatsApp session (git ignored)
-└── node_modules/              # Dependencies (git ignored)
-```
-
----
-
-## Environment Variables
-
-### Required
-- `MAIL_USER` - Gmail address
-- `MAIL_PASS` - Gmail app password
-- `MAIL_TO` - Recipients (comma-separated)
-- `GROUPS` - WhatsApp groups to monitor (comma-separated)
-
-### Optional
-- `NODE_ENV` - `development` or `production`
-- `MAIL_CC` - CC recipients
-- `MAIL_BCC` - BCC recipients
-- `AI_ENABLED` - Enable/disable AI summaries (default: true)
-- `LOG_LEVEL` - DEBUG, INFO, WARN, ERROR (default: info)
-- `CONTEXT_MESSAGES` - Previous messages for context (default: 4)
-- `MAX_RETRIES` - Retry attempts for API calls (default: 3)
-- `RETRY_DELAY_MS` - Initial retry delay in ms (default: 1000)
-
----
-
-## Logs
-
-Logs are written to `./logs/` directory:
-
-```
-logs/
-├── bot-2026-09-17.log        # Daily bot logs
-├── pm2-out.log               # PM2 stdout
-└── pm2-error.log             # PM2 stderr
-```
-
-Each log entry is JSON formatted:
-```json
-{
-  "timestamp": "2026-09-17T10:00:01.314Z",
-  "level": "INFO",
-  "message": "Ticket created successfully",
-  "groupName": "engineering",
-  "ticketId": "WA-12345"
-}
-```
-
----
-
-## Production Checklist
-
-- [ ] `.env` configured with all credentials
-- [ ] `.env` added to `.gitignore`
-- [ ] QR code scanned and session saved
-- [ ] Test `/raise` in WhatsApp group
-- [ ] Verify email received
-- [ ] PM2 running: `pm2 status`
-- [ ] Logs being written: `pm2 logs`
-- [ ] Auto-start configured: `pm2 startup && pm2 save`
-- [ ] Firewall allows outbound SMTP (port 465)
-- [ ] Sufficient disk space for logs
-
----
-
-## Development
-
-### Scripts
-
-```bash
-npm run start          # Run bot (for QR code scanning)
-npm run dev            # Run bot in development mode
-pm2 start pm2.config.js  # Production with PM2
-pm2 stop whatsapp-ticket-bot
-pm2 restart whatsapp-ticket-bot
-pm2 logs whatsapp-ticket-bot
-```
-
-### Local Testing
-
-```bash
-# Scan QR code
-npm run start
-
-# In another terminal, send test message with /raise
-
-# View logs
-tail -f logs/bot-*.log
-```
-
----
-
-## Security
-
-- 🔒 Credentials stored in `.env` (git ignored)
-- 🔒 Sensitive data sanitized in logs
-- 🔒 No passwords/API keys in source code
-- 🔒 Session file protected (git ignored)
-- 🔒 Input validation on all external data
-
----
-
-## Support & Issues
-
-1. Check [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed troubleshooting
-2. View logs: `pm2 logs whatsapp-ticket-bot`
-3. Verify `.env` configuration
-4. Check network/firewall settings
-
----
-
-## License
-
-MIT
-
----
+## 🆘 Troubleshooting
+- **QR Code not appearing?** Check your internet connection and logs.
+- **Emails not sending?** Verify your Gmail App Password and firewall settings.
+- **AI failing?** Ensure your local AI model is running and accessible at the `AI_BASE_URL`.
+- **Session expired?** Delete the `wa-session/` folder and run `npm start` to rescan.
 
 **Made for team productivity** 🚀

@@ -4,8 +4,8 @@
   "description": "Production-grade WhatsApp group monitoring bot that creates support tickets via email",
   "main": "whatsapp-mail-bridge.js",
   "scripts": {
-    "start": "node whatsapp-mail-bridge.js",
-    "dev": "NODE_ENV=development node whatsapp-mail-bridge.js",
+    "start": "node src/bot.js",
+    "dev": "NODE_ENV=development node src/bot.js",
     "viewer": "node ticket-viewer.js",
     "pm2:start": "pm2 start pm2.config.js --env production",
     "pm2:stop": "pm2 stop whatsapp-ticket-bot",

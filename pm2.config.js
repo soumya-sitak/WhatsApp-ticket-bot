@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'whatsapp-ticket-bot',
-      script: './whatsapp-mail-bridge.js',
+      script: './src/bot.js',
       instances: 1,
       exec_mode: 'fork',
       env: {

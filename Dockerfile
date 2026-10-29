@@ -60,10 +60,9 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy application files
-COPY whatsapp-mail-bridge.js ./
+COPY src/ ./src/
 COPY ticket-viewer.js ./
 COPY pm2.config.js ./
-COPY src/ ./src/
 
 # Create directories for persistent data
 RUN mkdir -p /app/logs /app/wa-session /app/.wwebjs_cache /app/.wwebjs_auth
@@ -82,4 +81,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));" || exit 0
 
 # Start the application
-CMD ["node", "whatsapp-mail-bridge.js"]
+CMD ["node", "src/bot.js"]
