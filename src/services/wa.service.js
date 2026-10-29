@@ -193,19 +193,25 @@ class WAService {
   async downloadMedia(msg) {
     if (!msg) return null;
     try {
-      if (typeof msg.downloadMedia === 'function') {
-        const media = await msg.downloadMedia();
-        if (media) return media;
+      // The a-ha moment: quoted messages in wwebjs are often a specialized type of object.
+      // If it's not a full message object, we MUST resolve it first.
+      let targetMsg = msg;
+
+      // If the object doesn't have downloadMedia, it's a shallow reference.
+      if (typeof targetMsg.downloadMedia !== 'function') {
+        const msgId = targetMsg.id?._serialized || targetMsg.id?.id;
+        if (msgId) {
+          logger.info(`Resolving shallow message for media download: ${msgId}`);
+          const fullMsg = await this.client.getMessageById(msgId);
+          if (fullMsg) {
+            targetMsg = fullMsg;
+          }
+        }
       }
 
-      // Fallback: try to get the full message if the object is shallow
-      const msgId = msg.id?._serialized || msg.id?.id;
-      if (msgId) {
-        logger.info(`Attempting fallback media download for msg: ${msgId}`);
-        const fullMsg = await this.client.getMessageById(msgId);
-        if (fullMsg && typeof fullMsg.downloadMedia === 'function') {
-          return await fullMsg.downloadMedia();
-        }
+      if (typeof targetMsg.downloadMedia === 'function') {
+        const media = await targetMsg.downloadMedia();
+        if (media) return media;
       }
     } catch (err) {
       logger.error(`Media download error in WAService: ${err.message}`);
