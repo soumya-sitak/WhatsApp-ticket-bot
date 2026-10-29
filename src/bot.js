@@ -123,23 +123,44 @@ async function processRaiseCommand({
     // Download attachment if the quoted message has media
     if (hasQuoted) {
       try {
-        const quotedMsgObj = msg.hasQuotedMsg
-          ? await msg.getQuotedMessage()
-          : (msg._data?.quotedMsg || await waService.findQuotedMsgFromWA(chatId, quotedStanzaId));
+        let quotedMsgObj = null;
+        if (msg.hasQuotedMsg) {
+          quotedMsgObj = await msg.getQuotedMessage();
+        } else if (msg._data?.quotedMsg) {
+          quotedMsgObj = msg._data.quotedMsg;
+        } else if (quotedStanzaId) {
+          quotedMsgObj = await waService.findQuotedMsgFromWA(chatId, quotedStanzaId);
+        }
 
-        if (quotedMsgObj && quotedMsgObj.hasMedia) {
-          logger.info(`📎 Downloading attachment for ticket...`);
-          const media = await quotedMsgObj.downloadMedia();
+        if (quotedMsgObj && (quotedMsgObj.hasMedia || quotedMsgObj.type === 'image' || quotedMsgObj.type === 'document')) {
+          logger.info(`📎 Media detected in quoted message. Attempting download...`);
+
+          // Some quoted messages are shallow; we might need to fetch the full message again
+          // to ensure downloadMedia is available.
+          let media = null;
+          if (typeof quotedMsgObj.downloadMedia === 'function') {
+            media = await quotedMsgObj.downloadMedia();
+          } else if (quotedMsgObj.id?._serialized) {
+            logger.info(`Retrying media download via full message fetch...`);
+            const fullMsg = await waService.client.getMessageById(quotedMsgObj.id._serialized);
+            if (fullMsg && typeof fullMsg.downloadMedia === 'function') {
+              media = await fullMsg.downloadMedia();
+            }
+          }
+
           if (media) {
+            logger.info(`✅ Successfully downloaded attachment: ${media.filename}`);
             reportedAttachment = {
               data: media.data,
               filename: media.filename || 'attachment',
               mimetype: media.mimetype,
             };
+          } else {
+            logger.warn(`⚠️ downloadMedia returned null for message ${quotedMsgObj.id?._serialized}`);
           }
         }
       } catch (err) {
-        logger.warn(`Failed to download attachment: ${err.message}`);
+        logger.error(`❌ Failed to download attachment: ${err.message}`);
       }
     }
 
