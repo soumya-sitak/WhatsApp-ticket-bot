@@ -108,6 +108,9 @@ There are two ways to raise a ticket in any monitored group:
 1. Send `/raise <describe your issue here>` directly in the group (e.g. `/raise Dashboard data delayed since 2pm`).
 2. The bot creates a ticket from your text and captures preceding messages from the group as context.
 
+#### Method 3: Message Edits
+- If you posted an issue description (or a reply) and forgot to add `/raise` or had a typo, simply edit your message so it starts with `/raise`. The bot listens for edited messages and triggers ticket creation automatically while preventing duplicate tickets.
+
 ### Commands
 
 - `raise` / `/raise [optional text]` - Create ticket from quoted message or directly from text

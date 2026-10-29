@@ -858,6 +858,25 @@ function isDuplicateMessage(msgId) {
   return false;
 }
 
+// Track message IDs that have already triggered ticket creation to prevent duplicates
+const raisedTicketMessageIds = new Map();
+
+function hasMessageRaisedTicket(id, stanzaId) {
+  if (id && raisedTicketMessageIds.has(String(id))) return true;
+  if (stanzaId && raisedTicketMessageIds.has(String(stanzaId))) return true;
+  return false;
+}
+
+function markMessageRaisedTicket(id, stanzaId) {
+  const now = Date.now();
+  // Keep history for up to 24 hours to prevent duplicate tickets on late edits
+  for (const [key, time] of raisedTicketMessageIds.entries()) {
+    if (now - time > 24 * 60 * 60 * 1000) raisedTicketMessageIds.delete(key);
+  }
+  if (id) raisedTicketMessageIds.set(String(id), now);
+  if (stanzaId) raisedTicketMessageIds.set(String(stanzaId), now);
+}
+
 let syncCheckInterval = null;
 
 function startSyncWatchdog() {
@@ -957,22 +976,35 @@ client.on('ready', async () => {
     console.error('Error finding groups on startup:', err.message);
   }
 
-  // Ensure message collection listener is active on the live Msg collection
+  // Ensure message collection listeners are active on the live Msg collection
   try {
     if (client.pupPage && !client.pupPage.isClosed()) {
       await client.pupPage.evaluate(() => {
         try {
           const Msg = window.require('WAWebCollections')?.Msg;
-          if (Msg && typeof Msg.on === 'function' && !window.__wwebjs_msg_listener_fixed) {
-            window.__wwebjs_msg_listener_fixed = true;
-            Msg.on('add', (msg) => {
-              try {
-                if (msg && msg.isNewMsg && typeof window.onAddMessageEvent === 'function') {
-                  const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(msg) : msg;
-                  window.onAddMessageEvent(model);
-                }
-              } catch (_) { }
-            });
+          if (Msg && typeof Msg.on === 'function') {
+            if (!window.__wwebjs_msg_listener_fixed) {
+              window.__wwebjs_msg_listener_fixed = true;
+              Msg.on('add', (msg) => {
+                try {
+                  if (msg && msg.isNewMsg && typeof window.onAddMessageEvent === 'function') {
+                    const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(msg) : msg;
+                    window.onAddMessageEvent(model);
+                  }
+                } catch (_) { }
+              });
+            }
+            if (!window.__wwebjs_edit_listener_fixed) {
+              window.__wwebjs_edit_listener_fixed = true;
+              Msg.on('change:body change:caption', (msg, newBody, prevBody) => {
+                try {
+                  if (typeof window.onEditMessageEvent === 'function') {
+                    const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(msg) : msg;
+                    window.onEditMessageEvent(model, newBody, prevBody);
+                  }
+                } catch (_) { }
+              });
+            }
           }
         } catch (_) { }
       });
@@ -989,6 +1021,378 @@ client.on('auth_failure', msg => {
   console.error('✖ Auth failed:', msg);
   process.exit(1);
 });
+
+// ============================================================================
+// RAISE COMMAND PROCESSOR (SHARED BY MESSAGE CREATE & EDIT)
+// ============================================================================
+
+async function processRaiseCommand({
+  msg,
+  chatId,
+  chatName,
+  senderName,
+  trimmedBody,
+  match,
+  isEdit = false,
+}) {
+  const matchedCommand = match.command;
+  const commandArgText = match.argText;
+  const hasQuoted = Boolean(msg.hasQuotedMsg || msg._data?.quotedMsg);
+
+  // If neither reply nor issue text was given, instruct the user
+  if (!hasQuoted && !commandArgText) {
+    console.log(`ℹ Command sent without reply or issue text - instructing user${isEdit ? ' (via edit)' : ''}`);
+    if (CONFIG.confirmInGroup) {
+      try {
+        await msg.reply('ℹ *To raise a ticket:*\n• Reply directly to any issue message with `raise` or `/raise`\n• Or type `raise <describe your issue here>` (or `/raise <issue>`)');
+      } catch (err) {
+        console.warn('Failed to send WhatsApp reply:', err.message);
+      }
+    }
+    return;
+  }
+
+  let quotedText = '';
+  let quotedSender = '';
+  let quotedTimestamp = msg.timestamp || Math.floor(Date.now() / 1000);
+  let quotedId = null;
+  let quotedStanzaId = msg._data?.quotedStanzaID || msg._data?.quotedMsg?.id?.id || null;
+  let quotedParticipant = msg._data?.quotedParticipant || null;
+  let raiserNotes = '';
+
+  if (hasQuoted) {
+    // MODE 1: Reply to an issue message
+    raiserNotes = commandArgText;
+    console.log(`\n🎯 [RAISE (REPLY${isEdit ? ' - VIA EDIT' : ''})] from ${senderName} in "${chatName}"`);
+
+    if (msg.hasQuotedMsg) {
+      try {
+        const quoted = await msg.getQuotedMessage();
+        if (quoted) {
+          quotedText = extractMessageText(quoted).trim();
+          quotedId = quoted.id?._serialized || quotedId;
+          quotedStanzaId = quoted.id?.id || quotedStanzaId;
+          quotedTimestamp = quoted.timestamp || quotedTimestamp;
+          quotedParticipant = quoted.author || quoted.from || quotedParticipant;
+          quotedSender = quoted._data?.notifyName || quoted._data?.pushname || '';
+        }
+      } catch (err) {
+        // getQuotedMessage failed, will fallback below
+      }
+    }
+
+    // Fallback 1: Raw quotedMsg object from message data
+    if ((!quotedText || !quotedSender) && msg._data?.quotedMsg) {
+      const rawQ = msg._data.quotedMsg;
+      if (!quotedText) {
+        quotedText = extractMessageText(rawQ).trim();
+      }
+      if (!quotedId) {
+        quotedId = rawQ.id?._serialized || msg._data.quotedStanzaID;
+      }
+      if (!quotedStanzaId) {
+        quotedStanzaId = rawQ.id?.id || msg._data.quotedStanzaID;
+      }
+      if (!quotedSender) {
+        quotedSender = rawQ.notifyName || rawQ.pushname || '';
+      }
+      if (!quotedParticipant) {
+        quotedParticipant = msg._data.quotedParticipant || rawQ.author || rawQ.from;
+      }
+    }
+
+    // Fallback 2: Direct lookup in WhatsApp Web store
+    if ((!quotedText || !quotedSender) && quotedStanzaId) {
+      const waMsg = await findQuotedMsgFromWA(chatId, quotedStanzaId);
+      if (waMsg) {
+        if (!quotedText) quotedText = waMsg.text?.trim() || '';
+        if (!quotedSender) quotedSender = waMsg.sender;
+        if (!quotedParticipant) quotedParticipant = waMsg.author;
+        if (waMsg.timestamp) quotedTimestamp = waMsg.timestamp;
+        if (waMsg.id && !quotedId) quotedId = waMsg.id;
+      }
+    }
+
+    // Fallback 3: Search in local group history
+    const historyMatch = groupHistories[chatId]?.find(m =>
+      isSameMessage(m, quotedId, quotedStanzaId, quotedText)
+    );
+    if (historyMatch) {
+      if (!quotedText) quotedText = historyMatch.text;
+      if (!quotedSender || isNumericOrId(quotedSender)) {
+        if (historyMatch.sender && !isNumericOrId(historyMatch.sender)) {
+          quotedSender = historyMatch.sender;
+        }
+      }
+      if (historyMatch.timestamp) quotedTimestamp = historyMatch.timestamp;
+      if (historyMatch.id && !quotedId) quotedId = historyMatch.id;
+      if (historyMatch.author && !quotedParticipant) quotedParticipant = historyMatch.author;
+    }
+
+    // Resolve reporter name if it is still a phone number / LID or empty
+    if ((!quotedSender || isNumericOrId(quotedSender)) && quotedParticipant) {
+      const resolvedName = await getContactName(quotedParticipant, chatId);
+      if (resolvedName) {
+        quotedSender = resolvedName;
+      }
+    }
+
+    if (!quotedSender) {
+      quotedSender = quotedParticipant ? quotedParticipant.replace(/@.*$/, '') : 'Unknown';
+    }
+  } else {
+    // MODE 2: Direct raise command with issue text (/raise <issue>)
+    quotedText = commandArgText;
+    quotedSender = senderName;
+    quotedId = msg.id?._serialized || null;
+    quotedStanzaId = msg.id?.id || msg._data?.id?.id || null;
+    quotedTimestamp = msg.timestamp || Math.floor(Date.now() / 1000);
+    raiserNotes = '';
+    console.log(`\n🎯 [RAISE (DIRECT${isEdit ? ' - VIA EDIT' : ''})] from ${senderName} in "${chatName}": "${quotedText.slice(0, 60)}"`);
+  }
+
+  if (!quotedText) {
+    console.warn('⚠ Could not retrieve issue text');
+    if (CONFIG.confirmInGroup) {
+      try {
+        await msg.reply('⚠ Could not read the issue text. Please try again with `raise <issue description>` or reply to the message.');
+      } catch (err) {
+        console.warn('Failed to send WhatsApp reply:', err.message);
+      }
+    }
+    return;
+  }
+
+  console.log(`📌 Issue from ${quotedSender}: "${quotedText.slice(0, 60)}"`);
+  if (raiserNotes) console.log(`📝 Raiser note: "${raiserNotes}"`);
+
+  // Ensure recent history is loaded for context
+  if (groupHistories[chatId].length < 2) {
+    await primeChatHistory(chatId, chatName);
+  }
+
+  // Gather context messages preceding the issue / command
+  let quotedIndex = -1;
+  if (hasQuoted) {
+    quotedIndex = groupHistories[chatId].findIndex(m =>
+      isSameMessage(m, quotedId, quotedStanzaId, quotedText)
+    );
+  } else {
+    quotedIndex = groupHistories[chatId].findIndex(m =>
+      isSameMessage(m, quotedId, quotedStanzaId, trimmedBody)
+    );
+  }
+
+  let contextMessages = [];
+  if (quotedIndex > 0) {
+    const start = Math.max(0, quotedIndex - CONFIG.contextMessagesCount);
+    contextMessages = groupHistories[chatId].slice(start, quotedIndex);
+  } else if (quotedIndex === 0) {
+    contextMessages = [];
+  } else {
+    const nonRaise = groupHistories[chatId].filter(m => {
+      const t = (m.text || '').trim();
+      const isRaise = isCommandMessage(t);
+      const isBotResponse = t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖');
+      const isQuotedText = quotedText && t.toLowerCase() === quotedText.toLowerCase().trim();
+      return !isRaise && !isBotResponse && !isQuotedText && t.length > 0;
+    });
+    contextMessages = nonRaise.slice(-CONFIG.contextMessagesCount);
+  }
+
+  // Filter out invalid or command messages from context
+  contextMessages = contextMessages.filter(m => {
+    if (!m || !m.text || !m.text.trim()) return false;
+    const t = m.text.trim();
+    if (isCommandMessage(t)) return false;
+    if (t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖')) return false;
+    if (quotedText && t.toLowerCase() === quotedText.toLowerCase().trim()) return false;
+    return true;
+  });
+
+  console.log(`📎 Gathered ${contextMessages.length} context message(s)`);
+  if (contextMessages.length > 0) {
+    contextMessages.forEach((c, idx) => {
+      console.log(`   [${idx + 1}] ${c.sender}: "${c.text.slice(0, 50)}"`);
+    });
+  }
+
+  // Clean the issue text by removing "reported by" patterns
+  const cleanedQuotedText = cleanIssueText(quotedText);
+
+  // Send email
+  try {
+    const result = await sendTicketEmail({
+      chatName: chatName,
+      reportedText: cleanedQuotedText,
+      reporterName: quotedSender,
+      raiserName: senderName,
+      raiserNotes: raiserNotes,
+      contextMessages: contextMessages,
+      reportedTimestamp: quotedTimestamp,
+    });
+
+    // Mark message as having raised a ticket so edits don't trigger duplicate tickets
+    const currentMsgId = msg.id?._serialized || null;
+    const currentStanzaId = msg.id?.id || msg._data?.id?.id || null;
+    markMessageRaisedTicket(currentMsgId, currentStanzaId);
+
+    // Confirm in WhatsApp only if email succeeded
+    if (result && result.success && CONFIG.confirmInGroup) {
+      try {
+        await msg.reply('🎟️ *Ticket Raised*');
+      } catch (err) {
+        console.warn('Failed to send WhatsApp confirmation:', err.message);
+      }
+    } else if ((!result || !result.success) && CONFIG.confirmInGroup) {
+      try {
+        await msg.reply('✖ Failed to create ticket. Please try again or contact support.');
+      } catch (err) {
+        console.warn('Failed to send WhatsApp error notification:', err.message);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to process /raise command:', err.message);
+  }
+}
+
+// ============================================================================
+// EDITED MESSAGE HANDLER
+// ============================================================================
+
+const processedEditDebounce = new Map();
+
+async function handleEditedMessage(msg, newBody, prevBody) {
+  try {
+    if (!msg) return;
+    if (msg.isStatus || msg.from === 'status@broadcast' || msg.type === 'protocol' || msg.type === 'e2e_notification' || msg.type === 'reaction') {
+      return;
+    }
+
+    const chatId = getMsgChatId(msg);
+    if (!chatId || !chatId.endsWith('@g.us')) return;
+
+    if (CONFIG.ignoreOwnMessages && msg.fromMe) return;
+
+    // Dynamically detect configured group if not yet in activeGroups
+    if (!activeGroups[chatId]) {
+      try {
+        const chat = await msg.getChat();
+        if (chat && chat.isGroup) {
+          const matchedGroupName = CONFIG.groups.find(
+            g => g.toLowerCase() === (chat.name || '').trim().toLowerCase()
+          );
+          if (matchedGroupName) {
+            activeGroups[chatId] = { name: chat.name, id: chatId };
+            if (!groupHistories[chatId]) groupHistories[chatId] = [];
+            console.log(`✔ Dynamically detected configured group "${chat.name}" (ID: ${chatId})`);
+            await primeChatHistory(chatId, chat.name);
+          }
+        }
+      } catch (_) { }
+    }
+
+    if (!activeGroups[chatId]) return;
+
+    const groupConfig = activeGroups[chatId];
+    const chatName = groupConfig.name;
+
+    if (!groupHistories[chatId]) groupHistories[chatId] = [];
+
+    const msgUniqueId = msg.id?._serialized || msg.id?.id || (msg._data?.id?.id ? String(msg._data.id.id) : null);
+    const stanzaId = msg.id?.id || msg._data?.id?.id || null;
+
+    // Resolve sender
+    const authorJid = msg.author || (msg.fromMe ? (client.info?.wid?._serialized || msg.from) : msg.from);
+    let senderName = msg._data?.notifyName || msg._data?.pushname;
+    if (!senderName && authorJid) {
+      senderName = await getContactName(authorJid, chatId);
+    }
+    if (!senderName && msg.fromMe && client.info?.pushname) {
+      senderName = client.info.pushname;
+    }
+    if (!senderName) {
+      senderName = authorJid ? String(authorJid).replace(/@.*$/, '') : (msg.fromMe ? 'Bot' : 'Unknown');
+    }
+
+    // Determine edited text and previous text
+    const editedText = (typeof newBody === 'string' && newBody.trim().length > 0)
+      ? newBody.trim()
+      : extractMessageText(msg).trim();
+    const previousText = (typeof prevBody === 'string') ? prevBody.trim() : '';
+
+    // Debounce duplicate edit events
+    const editKey = `${msgUniqueId || stanzaId}:${editedText}`;
+    const now = Date.now();
+    for (const [k, t] of processedEditDebounce.entries()) {
+      if (now - t > 30000) processedEditDebounce.delete(k);
+    }
+    if (processedEditDebounce.has(editKey)) {
+      return;
+    }
+    processedEditDebounce.set(editKey, now);
+
+    console.log(`✏ [EDIT] "${chatName}" | ${senderName}: "${previousText.slice(0, 30)}" ➔ "${editedText.slice(0, 40)}"`);
+
+    // 1. Update message in local chat history so future replies/context use the edited text
+    if (editedText) {
+      const msgObj = {
+        id: msg.id?._serialized || `${Date.now()}-${Math.random()}`,
+        stanzaId: stanzaId,
+        sender: senderName,
+        author: authorJid,
+        text: editedText,
+        timestamp: msg.timestamp || Math.floor(Date.now() / 1000),
+      };
+      const existingIdx = groupHistories[chatId].findIndex(m =>
+        isSameMessage(m, msgObj.id, msgObj.stanzaId)
+      );
+      if (existingIdx !== -1) {
+        groupHistories[chatId][existingIdx].text = editedText;
+      } else {
+        groupHistories[chatId].push(msgObj);
+        if (groupHistories[chatId].length > 50) groupHistories[chatId].shift();
+      }
+    }
+
+    // 2. Check if this message has already raised a ticket
+    if (hasMessageRaisedTicket(msgUniqueId, stanzaId)) {
+      console.log(`ℹ Message ${msgUniqueId || stanzaId} was already processed as a ticket; skipping duplicate ticket.`);
+      return;
+    }
+
+    // 3. If previous body was already a raise command, it was already handled or dismissed
+    if (previousText && isCommandMessage(previousText)) {
+      console.log(`ℹ Message previously contained a raise command; skipping.`);
+      return;
+    }
+
+    // 4. Check if the new edited text starts with a raise command
+    const match = matchCommand(editedText);
+    if (!match) {
+      return;
+    }
+
+    console.log(`🎯 [EDIT TRIGGER] Message edited to start with "${match.command}"! Triggering ticket process...`);
+
+    // Process the raise command from the edit
+    await processRaiseCommand({
+      msg,
+      chatId,
+      chatName,
+      senderName,
+      trimmedBody: editedText,
+      match,
+      isEdit: true,
+    });
+  } catch (err) {
+    console.error('✖ Edit message handler error:', err?.stack || err?.message || err);
+  }
+}
+
+// ============================================================================
+// MESSAGE LISTENERS
+// ============================================================================
 
 client.on('message_create', async msg => {
   try {
@@ -1076,223 +1480,22 @@ client.on('message_create', async msg => {
       return;
     }
 
-    const matchedCommand = match.command;
-    const commandArgText = match.argText;
-    const hasQuoted = Boolean(msg.hasQuotedMsg || msg._data?.quotedMsg);
-
-    // If neither reply nor issue text was given, instruct the user
-    if (!hasQuoted && !commandArgText) {
-      console.log(`ℹ Command sent without reply or issue text - instructing user`);
-      if (CONFIG.confirmInGroup) {
-        try {
-          await msg.reply('ℹ *To raise a ticket:*\n• Reply directly to any issue message with `raise` or `/raise`\n• Or type `raise <describe your issue here>` (or `/raise <issue>`)');
-        } catch (err) {
-          console.warn('Failed to send WhatsApp reply:', err.message);
-        }
-      }
-      return;
-    }
-
-    let quotedText = '';
-    let quotedSender = '';
-    let quotedTimestamp = msg.timestamp || Math.floor(Date.now() / 1000);
-    let quotedId = null;
-    let quotedStanzaId = msg._data?.quotedStanzaID || msg._data?.quotedMsg?.id?.id || null;
-    let quotedParticipant = msg._data?.quotedParticipant || null;
-    let raiserNotes = '';
-
-    if (hasQuoted) {
-      // MODE 1: Reply to an issue message
-      raiserNotes = commandArgText;
-      console.log(`\n🎯 [RAISE (REPLY)] from ${senderName} in "${chatName}"`);
-
-      if (msg.hasQuotedMsg) {
-        try {
-          const quoted = await msg.getQuotedMessage();
-          if (quoted) {
-            quotedText = extractMessageText(quoted).trim();
-            quotedId = quoted.id?._serialized || quotedId;
-            quotedStanzaId = quoted.id?.id || quotedStanzaId;
-            quotedTimestamp = quoted.timestamp || quotedTimestamp;
-            quotedParticipant = quoted.author || quoted.from || quotedParticipant;
-            quotedSender = quoted._data?.notifyName || quoted._data?.pushname || '';
-          }
-        } catch (err) {
-          // getQuotedMessage failed, will fallback below
-        }
-      }
-
-      // Fallback 1: Raw quotedMsg object from message data
-      if ((!quotedText || !quotedSender) && msg._data?.quotedMsg) {
-        const rawQ = msg._data.quotedMsg;
-        if (!quotedText) {
-          quotedText = extractMessageText(rawQ).trim();
-        }
-        if (!quotedId) {
-          quotedId = rawQ.id?._serialized || msg._data.quotedStanzaID;
-        }
-        if (!quotedStanzaId) {
-          quotedStanzaId = rawQ.id?.id || msg._data.quotedStanzaID;
-        }
-        if (!quotedSender) {
-          quotedSender = rawQ.notifyName || rawQ.pushname || '';
-        }
-        if (!quotedParticipant) {
-          quotedParticipant = msg._data.quotedParticipant || rawQ.author || rawQ.from;
-        }
-      }
-
-      // Fallback 2: Direct lookup in WhatsApp Web store
-      if ((!quotedText || !quotedSender) && quotedStanzaId) {
-        const waMsg = await findQuotedMsgFromWA(chatId, quotedStanzaId);
-        if (waMsg) {
-          if (!quotedText) quotedText = waMsg.text?.trim() || '';
-          if (!quotedSender) quotedSender = waMsg.sender;
-          if (!quotedParticipant) quotedParticipant = waMsg.author;
-          if (waMsg.timestamp) quotedTimestamp = waMsg.timestamp;
-          if (waMsg.id && !quotedId) quotedId = waMsg.id;
-        }
-      }
-
-      // Fallback 3: Search in local group history
-      const historyMatch = groupHistories[chatId]?.find(m =>
-        isSameMessage(m, quotedId, quotedStanzaId, quotedText)
-      );
-      if (historyMatch) {
-        if (!quotedText) quotedText = historyMatch.text;
-        if (!quotedSender || isNumericOrId(quotedSender)) {
-          if (historyMatch.sender && !isNumericOrId(historyMatch.sender)) {
-            quotedSender = historyMatch.sender;
-          }
-        }
-        if (historyMatch.timestamp) quotedTimestamp = historyMatch.timestamp;
-        if (historyMatch.id && !quotedId) quotedId = historyMatch.id;
-        if (historyMatch.author && !quotedParticipant) quotedParticipant = historyMatch.author;
-      }
-
-      // Resolve reporter name if it is still a phone number / LID or empty
-      if ((!quotedSender || isNumericOrId(quotedSender)) && quotedParticipant) {
-        const resolvedName = await getContactName(quotedParticipant, chatId);
-        if (resolvedName) {
-          quotedSender = resolvedName;
-        }
-      }
-
-      if (!quotedSender) {
-        quotedSender = quotedParticipant ? quotedParticipant.replace(/@.*$/, '') : 'Unknown';
-      }
-    } else {
-      // MODE 2: Direct raise command with issue text (/raise <issue>)
-      quotedText = commandArgText;
-      quotedSender = senderName;
-      quotedId = msg.id?._serialized || null;
-      quotedStanzaId = msg.id?.id || msg._data?.id?.id || null;
-      quotedTimestamp = msg.timestamp || Math.floor(Date.now() / 1000);
-      raiserNotes = '';
-      console.log(`\n🎯 [RAISE (DIRECT)] from ${senderName} in "${chatName}": "${quotedText.slice(0, 60)}"`);
-    }
-
-    if (!quotedText) {
-      console.warn('⚠ Could not retrieve issue text');
-      if (CONFIG.confirmInGroup) {
-        try {
-          await msg.reply('⚠ Could not read the issue text. Please try again with `raise <issue description>` or reply to the message.');
-        } catch (err) {
-          console.warn('Failed to send WhatsApp reply:', err.message);
-        }
-      }
-      return;
-    }
-
-    console.log(`📌 Issue from ${quotedSender}: "${quotedText.slice(0, 60)}"`);
-    if (raiserNotes) console.log(`📝 Raiser note: "${raiserNotes}"`);
-
-    // Ensure recent history is loaded for context
-    if (groupHistories[chatId].length < 2) {
-      await primeChatHistory(chatId, chatName);
-    }
-
-    // Gather context messages preceding the issue / command
-    let quotedIndex = -1;
-    if (hasQuoted) {
-      quotedIndex = groupHistories[chatId].findIndex(m =>
-        isSameMessage(m, quotedId, quotedStanzaId, quotedText)
-      );
-    } else {
-      quotedIndex = groupHistories[chatId].findIndex(m =>
-        isSameMessage(m, quotedId, quotedStanzaId, trimmedBody)
-      );
-    }
-
-    let contextMessages = [];
-    if (quotedIndex > 0) {
-      const start = Math.max(0, quotedIndex - CONFIG.contextMessagesCount);
-      contextMessages = groupHistories[chatId].slice(start, quotedIndex);
-    } else if (quotedIndex === 0) {
-      contextMessages = [];
-    } else {
-      const nonRaise = groupHistories[chatId].filter(m => {
-        const t = (m.text || '').trim();
-        const isRaise = isCommandMessage(t);
-        const isBotResponse = t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖');
-        const isQuotedText = quotedText && t.toLowerCase() === quotedText.toLowerCase().trim();
-        return !isRaise && !isBotResponse && !isQuotedText && t.length > 0;
-      });
-      contextMessages = nonRaise.slice(-CONFIG.contextMessagesCount);
-    }
-
-    // Filter out invalid or command messages from context
-    contextMessages = contextMessages.filter(m => {
-      if (!m || !m.text || !m.text.trim()) return false;
-      const t = m.text.trim();
-      if (isCommandMessage(t)) return false;
-      if (t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖')) return false;
-      if (quotedText && t.toLowerCase() === quotedText.toLowerCase().trim()) return false;
-      return true;
+    await processRaiseCommand({
+      msg,
+      chatId,
+      chatName,
+      senderName,
+      trimmedBody,
+      match,
+      isEdit: false,
     });
-
-    console.log(`📎 Gathered ${contextMessages.length} context message(s)`);
-    if (contextMessages.length > 0) {
-      contextMessages.forEach((c, idx) => {
-        console.log(`   [${idx + 1}] ${c.sender}: "${c.text.slice(0, 50)}"`);
-      });
-    }
-
-    // Clean the issue text by removing "reported by" patterns
-    const cleanedQuotedText = cleanIssueText(quotedText);
-
-    // Send email
-    try {
-      const result = await sendTicketEmail({
-        chatName: chatName,
-        reportedText: cleanedQuotedText,
-        reporterName: quotedSender,
-        raiserName: senderName,
-        raiserNotes: raiserNotes,
-        contextMessages: contextMessages,
-        reportedTimestamp: quotedTimestamp,
-      });
-
-      // Confirm in WhatsApp only if email succeeded
-      if (result && result.success && CONFIG.confirmInGroup) {
-        try {
-          await msg.reply('🎟️ *Ticket Raised*');
-        } catch (err) {
-          console.warn('Failed to send WhatsApp confirmation:', err.message);
-        }
-      } else if ((!result || !result.success) && CONFIG.confirmInGroup) {
-        try {
-          await msg.reply('✖ Failed to create ticket. Please try again or contact support.');
-        } catch (err) {
-          console.warn('Failed to send WhatsApp error notification:', err.message);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to process /raise command:', err.message);
-    }
   } catch (err) {
     console.error('✖ Message handler error:', err?.stack || err?.message || err);
   }
+});
+
+client.on('message_edit', async (msg, newBody, prevBody) => {
+  await handleEditedMessage(msg, newBody, prevBody);
 });
 
 client.on('disconnected', reason => {
