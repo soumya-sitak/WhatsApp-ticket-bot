@@ -11,7 +11,7 @@ const transporter = nodemailer.createTransport({
 });
 
 async function sendTicket(ticketData, ai) {
-  const { chatName, reportedText, reporterName, raiserName, raiserNotes, contextMessages, reportedTimestamp } = ticketData;
+  const { chatName, reportedText, reporterName, raiserName, raiserNotes, contextMessages, reportedTimestamp, attachment } = ticketData;
 
   const subject = ai?.subject
     ? `${CONFIG.prefix} ${ai.subject}`
@@ -97,6 +97,11 @@ async function sendTicket(ticketData, ai) {
       to: CONFIG.mail.to,
       subject: subject,
       html: html,
+      attachments: attachment ? [{
+        filename: attachment.filename,
+        content: attachment.data,
+        contentType: attachment.mimetype,
+      }] : [],
     };
     if (CONFIG.mail.cc.length > 0) mailOptions.cc = CONFIG.mail.cc;
     if (CONFIG.mail.bcc.length > 0) mailOptions.bcc = CONFIG.mail.bcc;

@@ -78,6 +78,7 @@ async function processRaiseCommand({
   let quotedStanzaId = msg._data?.quotedStanzaID || msg._data?.quotedMsg?.id?.id || null;
   let quotedParticipant = msg._data?.quotedParticipant || null;
   let raiserNotes = '';
+  let reportedAttachment = null;
 
   if (hasQuoted) {
     raiserNotes = commandArgText;
@@ -116,6 +117,29 @@ async function processRaiseCommand({
         if (!quotedParticipant) quotedParticipant = waMsg.author;
         if (waMsg.timestamp) quotedTimestamp = waMsg.timestamp;
         if (waMsg.id && !quotedId) quotedId = waMsg.id;
+      }
+    }
+
+    // Download attachment if the quoted message has media
+    if (hasQuoted) {
+      try {
+        const quotedMsgObj = msg.hasQuotedMsg
+          ? await msg.getQuotedMessage()
+          : (msg._data?.quotedMsg || await waService.findQuotedMsgFromWA(chatId, quotedStanzaId));
+
+        if (quotedMsgObj && quotedMsgObj.hasMedia) {
+          logger.info(`📎 Downloading attachment for ticket...`);
+          const media = await quotedMsgObj.downloadMedia();
+          if (media) {
+            reportedAttachment = {
+              data: media.data,
+              filename: media.filename || 'attachment',
+              mimetype: media.mimetype,
+            };
+          }
+        }
+      } catch (err) {
+        logger.warn(`Failed to download attachment: ${err.message}`);
       }
     }
 
@@ -246,6 +270,7 @@ async function processRaiseCommand({
       raiserNotes: raiserNotes,
       contextMessages: contextMessages,
       reportedTimestamp: quotedTimestamp,
+      attachment: reportedAttachment,
     };
 
     logger.info(`📧 Sending email ticket...`);
