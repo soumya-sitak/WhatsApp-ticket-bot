@@ -80,8 +80,7 @@ You are an assistant that converts informal WhatsApp issue reports into professi
 Analyze the reported issue and all provided background context messages carefully.
 
 RULES:
-- Identify all distinct technical or operational issues mentioned across the conversation, including relevant background context.
-- Do not omit any reported issue.
+- Identify all distinct technical or operational issues mentioned across the conversation.
 - Do not invent causes, technical details, severity, impact, or resolutions that are not supported by the messages.
 - Correct spelling, grammar, and informal wording while preserving the original meaning.
 - Use clear, natural, professional English.
@@ -90,6 +89,12 @@ RULES:
 - Use separate bullet points only when multiple distinct issues need to be documented.
 - Avoid redundant wording and unnecessary explanations.
 - Do not include reporter names, phone numbers, WhatsApp user IDs, or phrases such as "reported by user" in the subject or summary unless directly relevant to the technical issue.
+
+CRITICAL CONTEXT RELEVANCE RULES:
+- "relevant_context_indexes" must ONLY contain index numbers of context messages that directly discuss or provide technical reproduction details/error logs for the SAME reported issue.
+- Generic acknowledgements (e.g. "ok", "sure", "will do", "noted", "create and give sir", "thanks"), pleasantries, greetings, or messages discussing completely unrelated tasks/topics are STRICTLY IRRELEVANT.
+- If a context message does not share the same technical subject matter as the reported issue, DO NOT include its index.
+- When context messages are not directly related to the issue, return [].
 
 OUTPUT FIELDS:
 
@@ -106,21 +111,33 @@ OUTPUT FIELDS:
    - Do not repeat the subject unnecessarily.
 
 3. relevant_context_indexes:
-   - Return all relevant context message indexes as integers.
-   - Indexes are zero-based and refer to the contextMessages array.
-   - Include messages that report an issue or provide necessary background.
+   - Array of zero-based integers referencing only directly relevant context messages.
    - Return [] if no context messages are relevant.
 
-EXAMPLE:
-
-Input issue:
-"raise Team, issue with whatsapp slow and lagging while triggering messageee"
-
+EXAMPLE 1 (Irrelevant context):
+[BACKGROUND CONTEXT]
+[0] [06:45:51 AM] Shuaib: Sure we will create and give sir
+[REPORTED ISSUE]
+Reported by: UserA
+Issue: "Testing issue: payment gateway returned 500 error"
 Expected output:
 {
-  "subject": "WhatsApp Message Triggering Delays",
-  "summary": "WhatsApp messages are experiencing slow responses and lag when triggered.",
+  "subject": "Payment Gateway 500 Error During Testing",
+  "summary": "Payment gateway returned a 500 error during testing.",
   "relevant_context_indexes": []
+}
+
+EXAMPLE 2 (Relevant context):
+[BACKGROUND CONTEXT]
+[0] [10:15:00 AM] Alex: Users cannot checkout, API returning connection timeout
+[REPORTED ISSUE]
+Reported by: UserB
+Issue: "Checkout service is down"
+Expected output:
+{
+  "subject": "Checkout Service Outage and API Connection Timeouts",
+  "summary": "Users are unable to checkout due to API connection timeouts.",
+  "relevant_context_indexes": [0]
 }
 
 OUTPUT REQUIREMENTS:
@@ -332,7 +349,7 @@ async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes
   if (!CONFIG.ai.enabled) return null;
 
   const contextStr = contextMessages && contextMessages.length > 0
-    ? contextMessages.map(m => `[${formatTime(m.timestamp)}] ${m.sender}: ${m.text}`).join('\n')
+    ? contextMessages.map((m, idx) => `[${idx}] [${formatTime(m.timestamp)}] ${m.sender}: ${m.text}`).join('\n')
     : '(No preceding messages)';
 
   const userPrompt =
@@ -358,7 +375,7 @@ async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes
           { role: 'system', content: AI_SYSTEM_PROMPT },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.3,
+        temperature: 0.1,
       }),
       signal: controller.signal,
     });
