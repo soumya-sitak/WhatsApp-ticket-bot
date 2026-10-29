@@ -135,8 +135,6 @@ async function processRaiseCommand({
         if (quotedMsgObj && (quotedMsgObj.hasMedia || quotedMsgObj.type === 'image' || quotedMsgObj.type === 'document')) {
           logger.info(`📎 Media detected in quoted message. Attempting download...`);
 
-          // Some quoted messages are shallow; we might need to fetch the full message again
-          // to ensure downloadMedia is available.
           let media = null;
           if (typeof quotedMsgObj.downloadMedia === 'function') {
             media = await quotedMsgObj.downloadMedia();
@@ -161,6 +159,23 @@ async function processRaiseCommand({
         }
       } catch (err) {
         logger.error(`❌ Failed to download attachment: ${err.message}`);
+      }
+    }
+
+    // ENSURE we have text for the ticket, even if the message is ONLY an image
+    if (!quotedText && hasQuoted) {
+      // If it's an image, check if it has a caption
+      const quotedMsgObj = msg.hasQuotedMsg
+        ? await msg.getQuotedMessage()
+        : (msg._data?.quotedMsg || await waService.findQuotedMsgFromWA(chatId, quotedStanzaId));
+
+      if (quotedMsgObj) {
+        const caption = extractMessageText(quotedMsgObj).trim();
+        if (caption) {
+          quotedText = caption;
+        } else if (reportedAttachment) {
+          quotedText = `[Image/Media Attachment]`;
+        }
       }
     }
 
