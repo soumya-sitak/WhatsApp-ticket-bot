@@ -190,6 +190,29 @@ class WAService {
     return null;
   }
 
+  async downloadMedia(msg) {
+    if (!msg) return null;
+    try {
+      if (typeof msg.downloadMedia === 'function') {
+        const media = await msg.downloadMedia();
+        if (media) return media;
+      }
+
+      // Fallback: try to get the full message if the object is shallow
+      const msgId = msg.id?._serialized || msg.id?.id;
+      if (msgId) {
+        logger.info(`Attempting fallback media download for msg: ${msgId}`);
+        const fullMsg = await this.client.getMessageById(msgId);
+        if (fullMsg && typeof fullMsg.downloadMedia === 'function') {
+          return await fullMsg.downloadMedia();
+        }
+      }
+    } catch (err) {
+      logger.error(`Media download error in WAService: ${err.message}`);
+    }
+    return null;
+  }
+
   async findQuotedMsgFromWA(chatId, stanzaId) {
     if (!this.client.pupPage || !stanzaId) return null;
     try {

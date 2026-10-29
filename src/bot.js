@@ -135,16 +135,7 @@ async function processRaiseCommand({
         if (quotedMsgObj && (quotedMsgObj.hasMedia || quotedMsgObj.type === 'image' || quotedMsgObj.type === 'document')) {
           logger.info(`📎 Media detected in quoted message. Attempting download...`);
 
-          let media = null;
-          if (typeof quotedMsgObj.downloadMedia === 'function') {
-            media = await quotedMsgObj.downloadMedia();
-          } else if (quotedMsgObj.id?._serialized) {
-            logger.info(`Retrying media download via full message fetch...`);
-            const fullMsg = await waService.client.getMessageById(quotedMsgObj.id._serialized);
-            if (fullMsg && typeof fullMsg.downloadMedia === 'function') {
-              media = await fullMsg.downloadMedia();
-            }
-          }
+          const media = await waService.downloadMedia(quotedMsgObj);
 
           if (media) {
             logger.info(`✅ Successfully downloaded attachment: ${media.filename}`);
@@ -154,7 +145,7 @@ async function processRaiseCommand({
               mimetype: media.mimetype,
             };
           } else {
-            logger.warn(`⚠️ downloadMedia returned null for message ${quotedMsgObj.id?._serialized}`);
+            logger.warn(`⚠️ Media download returned null for message ${quotedMsgObj.id?._serialized}`);
           }
         }
       } catch (err) {
