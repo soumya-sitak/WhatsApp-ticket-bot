@@ -328,7 +328,7 @@ async function logTicketToCSV({ timestamp, chatName, raiserName, issueSubject, r
 // AI SUMMARIZATION
 // ============================================================================
 
-async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes, contextMessages }) {
+async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes, contextMessages }, retries = 2) {
   if (!CONFIG.ai.enabled) return null;
 
   const contextStr = contextMessages && contextMessages.length > 0
@@ -344,7 +344,7 @@ async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s — generous buffer for cold-start
 
     const res = await fetch(`${CONFIG.ai.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -371,6 +371,12 @@ async function aiSummarize({ reportedText, reporterName, raiserName, raiserNotes
     if (!parsed) throw new Error('Could not parse JSON response');
     return parsed;
   } catch (err) {
+    // Retry on AbortError — can be caused by WhatsApp client re-init race condition on startup
+    if ((err.name === 'AbortError' || err.message === 'This operation was aborted') && retries > 0) {
+      console.warn(`⚠ AI fetch aborted (likely WA client re-init), retrying in 3s... (${retries} attempt(s) left)`);
+      await new Promise(r => setTimeout(r, 3000));
+      return aiSummarize({ reportedText, reporterName, raiserName, raiserNotes, contextMessages }, retries - 1);
+    }
     console.warn('⚠ AI summarization failed:', err.message);
     return null;
   }
@@ -389,6 +395,10 @@ const transporter = nodemailer.createTransport({
 
 async function sendTicketEmail({ chatName, reportedText, reporterName, raiserName, raiserNotes, contextMessages, reportedTimestamp }) {
   console.log(`\n⏳ Generating AI ticket summary for issue reported by ${reporterName}...`);
+
+  // Brief pause to let WhatsApp client fully stabilize before starting LLM call
+  // (prevents abort caused by WA re-init race condition on fast ticket raises at startup)
+  await new Promise(r => setTimeout(r, 2000));
 
   const ai = await aiSummarize({
     reportedText,
