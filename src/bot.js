@@ -638,6 +638,10 @@ client.on('message_create', async msg => {
         waService.groupHistories[chatId].push(msgObj);
       }
       if (waService.groupHistories[chatId].length > 50) waService.groupHistories[chatId].shift();
+    } else if (msg.hasMedia || msg.type === 'image' || msg.type === 'document') {
+      // Log media messages without trying to treat them as text
+      const filename = msg._data?.filename || 'Media Attachment';
+      logger.info(`[MEDIA] "${chatName}" | ${senderName}: ${filename}`);
     }
 
     const match = matchCommand(trimmedBody, CONFIG.commands);

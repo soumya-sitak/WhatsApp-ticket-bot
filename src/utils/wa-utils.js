@@ -31,7 +31,15 @@ function extractMessageText(msg) {
     msg.pollName ||
     '';
 
-  return typeof candidate === 'string' ? candidate : String(candidate || '');
+  if (typeof candidate !== 'string') return '';
+
+  // Prevent binary/Base64 data from being treated as text
+  // Base64 image headers usually start with /9j/ or iVBOR
+  if (candidate.startsWith('/9j/') || candidate.startsWith('iVBOR')) {
+    return '';
+  }
+
+  return candidate;
 }
 
 function isNumericOrId(str) {
