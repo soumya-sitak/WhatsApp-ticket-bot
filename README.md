@@ -34,7 +34,7 @@ Requirements: Docker Engine with Docker Compose, three WhatsApp accounts, and sh
    docker compose logs -f whatsapp-bot-enterprise
    ```
 
-Each service uses a separate persistent Docker volume for its WhatsApp session and browser cache, plus a unique health port (3001–3003). The existing top-level `wa-session/session` is left untouched; all three new instances will request fresh QR logins. The host network is retained so containers can reach an AI service configured on the host’s `localhost`.
+Each service uses a separate persistent Docker volume for its WhatsApp session and browser cache, plus a unique health port (3001–3003). The existing top-level `wa-session/session` is left untouched. On first start, an unlinked instance prints a QR; after scanning, its login persists in that instance's Docker volume. The host network is retained so containers can reach an AI service configured on the host’s `localhost`.
 
 Restart or inspect an individual account without interrupting the others:
 
@@ -42,6 +42,60 @@ Restart or inspect an individual account without interrupting the others:
 docker compose restart whatsapp-bot-support
 docker compose logs -f whatsapp-bot-support
 ```
+
+Start or stop only one bot without affecting the other services:
+
+```sh
+docker compose up -d --build whatsapp-bot-support
+docker compose stop whatsapp-bot-support
+```
+
+## Add another WhatsApp number
+
+Each additional number is configured manually in a local account env file, Compose, and the Dockerfile session-directory list. For example, use the ID `field-team`:
+
+1. Copy a safe account template and edit the account-specific values:
+
+   ```sh
+   cp .env.accounts/support.env.example .env.accounts/field-team.env
+   ```
+
+   Set `BOT_INSTANCE_ID=field-team`, `WA_SESSION_DIR=/app/wa-session/field-team`, an unused `HEALTH_PORT` such as `3004`, the exact comma-separated `WHATSAPP_GROUPS`, and the correct `MAIL_TO`. Keep SMTP sender credentials and shared AI settings in `.env`. The local account file is Git-ignored.
+
+2. Add a service under `services:` in `docker-compose.yml`:
+
+   ```yaml
+   whatsapp-bot-field-team:
+     <<: *bot
+     container_name: whatsapp-ticket-bot-field-team
+     env_file:
+       - .env
+       - .env.accounts/field-team.env
+     volumes:
+       - bot-logs:/app/logs
+       - ticket-data:/app/ticket-data
+       - wa-session-field-team:/app/wa-session/field-team
+       - wwebjs-cache-field-team:/app/.wwebjs_cache
+   ```
+
+3. Add the new persistent volumes under the top-level `volumes:` section:
+
+   ```yaml
+   wa-session-field-team:
+   wwebjs-cache-field-team:
+   ```
+
+4. Add `/app/wa-session/field-team` to the `mkdir -p` directory list in `Dockerfile`. The image creates these paths and gives them to the `node` user before Docker initializes each named session volume. No `EXPOSE` update is needed: the services use host networking, and the health check reads each account's `HEALTH_PORT`.
+
+5. Validate the Compose file and start only the new service:
+
+   ```sh
+   docker compose config -q
+   docker compose up -d --build whatsapp-bot-field-team
+   docker compose logs -f whatsapp-bot-field-team
+   ```
+
+   Scan that service's QR using the `field-team` WhatsApp account. Its own session and cache volumes keep its login separate. Assign each group to only the account that should create tickets for it; groups listed for multiple accounts will be monitored by each of them.
 
 ## Raise a ticket
 
