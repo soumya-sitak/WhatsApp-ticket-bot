@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.env.accounts/*.env
 
 # Dependencies
 node_modules/
@@ -20,6 +21,7 @@ wa-session/
 wa-cache/
 session/
 .wwebjs_cache/
+ticket-data/
 
 # OS Files
 .DS_Store

@@ -6,7 +6,7 @@ const logger = require('../logger');
 class WAService {
   constructor() {
     this.client = new Client({
-      authStrategy: new LocalAuth({ dataPath: './wa-session' }),
+      authStrategy: new LocalAuth({ dataPath: CONFIG.waSessionDir }),
       puppeteer: {
         headless: true,
         args: [

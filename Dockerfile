@@ -65,7 +65,9 @@ COPY ticket-viewer.js ./
 COPY pm2.config.js ./
 
 # Create directories for persistent data
-RUN mkdir -p /app/logs /app/wa-session /app/.wwebjs_cache /app/.wwebjs_auth
+RUN mkdir -p /app/logs /app/ticket-data \
+    /app/wa-session/support /app/wa-session/govt-support /app/wa-session/enterprise \
+    /app/.wwebjs_cache/support /app/.wwebjs_cache/govt-support /app/.wwebjs_cache/enterprise
 
 # Set proper permissions
 RUN chown -R node:node /app
@@ -74,11 +76,11 @@ RUN chown -R node:node /app
 USER node
 
 # Expose the local WhatsApp readiness endpoint.
-EXPOSE 3001
+EXPOSE 3001 3002 3003
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD node -e "require('http').get('http://127.0.0.1:3001/health', (r) => { r.resume(); process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
+    CMD node -e "const p=process.env.HEALTH_PORT||3001;require('http').get('http://127.0.0.1:'+p+'/health',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
 # Start the application
 CMD ["node", "src/bot.js"]

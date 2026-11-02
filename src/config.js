@@ -8,6 +8,10 @@ function parseInteger(value, fallback, min, max) {
 const mailPort = parseInteger(process.env.MAIL_PORT, 465, 1, 65535);
 
 const CONFIG = {
+  instanceId: process.env.BOT_INSTANCE_ID || 'default',
+  waSessionDir: process.env.WA_SESSION_DIR || './wa-session',
+  healthPort: parseInteger(process.env.HEALTH_PORT, 3001, 1, 65535),
+
   // Multiple groups to monitor
   groups: (process.env.WHATSAPP_GROUPS || 'test').split(',').map(g => g.trim()).filter(Boolean),
 

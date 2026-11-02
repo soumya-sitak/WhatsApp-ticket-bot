@@ -14,11 +14,12 @@ const LOG_LEVELS = {
 };
 
 class Logger {
-  constructor(options = {}) {
+  constructor() {
+    this.instanceId = (process.env.BOT_INSTANCE_ID || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
     const configuredLevel = process.env.LOG_LEVEL?.toUpperCase() || 'INFO';
     this.level = LOG_LEVELS[configuredLevel] !== undefined ? LOG_LEVELS[configuredLevel] : LOG_LEVELS.INFO;
     this.logDir = process.env.LOG_DIR || './logs';
-    this.logFile = path.join(this.logDir, `bot-${new Date().toISOString().split('T')[0]}.log`);
+    this.logFile = path.join(this.logDir, `bot-${this.instanceId}-${new Date().toISOString().split('T')[0]}.log`);
 
     // Ensure logs directory exists
     if (!fs.existsSync(this.logDir)) {
@@ -32,6 +33,7 @@ class Logger {
     return JSON.stringify({
       timestamp,
       level,
+      instanceId: this.instanceId,
       message,
       ...sanitized,
     });

@@ -17,10 +17,7 @@ const csvService = require('./services/csv.service');
 const logger = require('./logger');
 
 const client = waService.client;
-const configuredHealthPort = Number.parseInt(process.env.HEALTH_PORT || '3001', 10);
-const healthPort = Number.isInteger(configuredHealthPort) && configuredHealthPort > 0 && configuredHealthPort <= 65535
-  ? configuredHealthPort
-  : 3001;
+const healthPort = CONFIG.healthPort;
 const healthServer = http.createServer((req, res) => {
   if (req.url !== '/health') {
     res.writeHead(404).end();
@@ -706,7 +703,7 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-console.log('Starting WhatsApp Ticket Bot...');
+console.log(`Starting WhatsApp Ticket Bot (${CONFIG.instanceId})...`);
 client.initialize().catch(err => {
   logger.error(`Failed to initialize: ${err?.stack || err?.message || err}`);
   process.exit(1);

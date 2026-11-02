@@ -1,57 +1,104 @@
+x-bot: &bot
+  image: whatsapp-ticket-bot:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: production
+  restart: unless-stopped
+  network_mode: host
+  environment:
+    NODE_ENV: production
+    TZ: UTC
+    TICKETS_DIR: /app/ticket-data
+  security_opt:
+    - no-new-privileges:true
+  deploy:
+    resources:
+      limits:
+        cpus: '1.0'
+        memory: 1G
+      reservations:
+        cpus: '0.5'
+        memory: 512M
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - "const p=process.env.HEALTH_PORT||3001;require('http').get('http://127.0.0.1:'+p+'/health',r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 60s
+
 services:
-  whatsapp-bot:
+  whatsapp-bot-support:
+    <<: *bot
+    container_name: whatsapp-ticket-bot-support
+    env_file:
+      - .env
+      - .env.accounts/support.env
+    volumes:
+      - bot-logs:/app/logs
+      - ticket-data:/app/ticket-data
+      - wa-session-support:/app/wa-session/support
+      - wwebjs-cache-support:/app/.wwebjs_cache
+
+  whatsapp-bot-govt-support:
+    <<: *bot
+    container_name: whatsapp-ticket-bot-govt-support
+    env_file:
+      - .env
+      - .env.accounts/govt-support.env
+    volumes:
+      - bot-logs:/app/logs
+      - ticket-data:/app/ticket-data
+      - wa-session-govt-support:/app/wa-session/govt-support
+      - wwebjs-cache-govt-support:/app/.wwebjs_cache
+
+  whatsapp-bot-enterprise:
+    <<: *bot
+    container_name: whatsapp-ticket-bot-enterprise
+    env_file:
+      - .env
+      - .env.accounts/enterprise.env
+    volumes:
+      - bot-logs:/app/logs
+      - ticket-data:/app/ticket-data
+      - wa-session-enterprise:/app/wa-session/enterprise
+      - wwebjs-cache-enterprise:/app/.wwebjs_cache
+
+  ticket-viewer:
+    image: whatsapp-ticket-bot:local
     build:
       context: .
       dockerfile: Dockerfile
       target: production
-    container_name: whatsapp-ticket-bot
+    command: ["node", "ticket-viewer.js"]
     restart: unless-stopped
-
-    # Environment variables
-    env_file:
-      - .env
-
-    environment:
-      - NODE_ENV=production
-      - TZ=UTC
-
-    # Persistent volumes
-    volumes:
-      # WhatsApp session persistence
-      - ./wa-session:/app/wa-session
-      - ./logs:/app/logs
-      - ./.wwebjs_cache:/app/.wwebjs_cache
-      - ./.wwebjs_auth:/app/.wwebjs_auth
-
-    # Network mode: Use host network to access localhost services like OmniRoute
-    # Comment this out if OmniRoute is in another container
-    network_mode: "host"
-
-    # Security options
-    security_opt:
-      - no-new-privileges:true
-
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-
-    # Logging configuration
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-    # Health check
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/health', (r) => { r.resume(); process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
+      disable: true
+    environment:
+      TICKETS_DIR: /app/ticket-data
+      VIEWER_HOST: 0.0.0.0
+      VIEWER_PORT: 3000
+    volumes:
+      - ticket-data:/app/ticket-data:ro
+      - ./tickets.csv:/app/tickets.csv:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  bot-logs:
+  ticket-data:
+  wa-session-support:
+  wa-session-govt-support:
+  wa-session-enterprise:
+  wwebjs-cache-support:
+  wwebjs-cache-govt-support:
+  wwebjs-cache-enterprise:

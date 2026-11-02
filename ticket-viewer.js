@@ -79,14 +79,20 @@ function parseCSV(csvContent) {
 
 app.get('/api/tickets', (req, res) => {
   try {
-    const csvPath = path.join(process.cwd(), 'tickets.csv');
+    const csvPaths = [];
+    const legacyCsvPath = path.join(process.cwd(), 'tickets.csv');
+    const ticketDir = process.env.TICKETS_DIR || path.join(process.cwd(), 'ticket-data');
 
-    if (!fs.existsSync(csvPath)) {
-      return res.json([]);
+    if (fs.existsSync(legacyCsvPath) && fs.statSync(legacyCsvPath).isFile()) {
+      csvPaths.push(legacyCsvPath);
+    }
+    if (fs.existsSync(ticketDir)) {
+      csvPaths.push(...fs.readdirSync(ticketDir)
+        .filter(filename => /^tickets-[a-zA-Z0-9_-]+\.csv$/.test(filename))
+        .map(filename => path.join(ticketDir, filename)));
     }
 
-    const csvContent = fs.readFileSync(csvPath, 'utf8');
-    const tickets = parseCSV(csvContent);
+    const tickets = csvPaths.flatMap(csvPath => parseCSV(fs.readFileSync(csvPath, 'utf8')));
 
     res.json(tickets);
   } catch (err) {
