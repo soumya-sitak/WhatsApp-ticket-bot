@@ -1,9 +1,10 @@
-const { Client } = require('whatsapp-web.js');
+const http = require('node:http');
 const { CONFIG } = require('./config');
 const {
   extractMessageText,
   matchCommand,
   isCommandMessage,
+  isGenericContextMessage,
   cleanIssueText,
   getMsgChatId,
   isSameMessage,
@@ -16,6 +17,24 @@ const csvService = require('./services/csv.service');
 const logger = require('./logger');
 
 const client = waService.client;
+const configuredHealthPort = Number.parseInt(process.env.HEALTH_PORT || '3001', 10);
+const healthPort = Number.isInteger(configuredHealthPort) && configuredHealthPort > 0 && configuredHealthPort <= 65535
+  ? configuredHealthPort
+  : 3001;
+const healthServer = http.createServer((req, res) => {
+  if (req.url !== '/health') {
+    res.writeHead(404).end();
+    return;
+  }
+
+  const healthy = waService.isReady;
+  res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ status: healthy ? 'ok' : 'starting' }));
+});
+
+healthServer.listen(healthPort, '127.0.0.1', () => {
+  logger.info(`Health endpoint listening on 127.0.0.1:${healthPort}/health`);
+});
 
 // State
 const processedMessageIds = new Map();
@@ -79,6 +98,7 @@ async function processRaiseCommand({
   let quotedParticipant = msg._data?.quotedParticipant || null;
   let raiserNotes = '';
   let reportedAttachment = null;
+  let quotedMessage = null;
 
   if (hasQuoted) {
     raiserNotes = commandArgText;
@@ -86,96 +106,73 @@ async function processRaiseCommand({
 
     if (msg.hasQuotedMsg) {
       try {
-        const quoted = await msg.getQuotedMessage();
-        if (quoted) {
-          quotedText = extractMessageText(quoted).trim();
-          quotedId = quoted.id?._serialized || quotedId;
-          quotedStanzaId = quoted.id?.id || quotedStanzaId;
-          quotedTimestamp = quoted.timestamp || quotedTimestamp;
-          quotedParticipant = quoted.author || quoted.from || quotedParticipant;
-          quotedSender = quoted._data?.notifyName || quoted._data?.pushname || '';
-        }
+        quotedMessage = await msg.getQuotedMessage();
       } catch (err) {
-        // fallback
+        logger.warn(`Quoted-message lookup failed; trying available quote data: ${err?.message || err}`);
       }
     }
 
-    if ((!quotedText || !quotedSender) && msg._data?.quotedMsg) {
-      const rawQ = msg._data.quotedMsg;
-      if (!quotedText) quotedText = extractMessageText(rawQ).trim();
-      if (!quotedId) quotedId = rawQ.id?._serialized || msg._data.quotedStanzaID;
-      if (!quotedStanzaId) quotedStanzaId = rawQ.id?.id || msg._data.quotedStanzaID;
-      if (!quotedSender) quotedSender = rawQ.notifyName || rawQ.pushname || '';
-      if (!quotedParticipant) quotedParticipant = msg._data.quotedParticipant || rawQ.author || rawQ.from;
+    if (!quotedMessage && msg._data?.quotedMsg) {
+      quotedMessage = msg._data.quotedMsg;
     }
 
-    if ((!quotedText || !quotedSender) && quotedStanzaId) {
-      const waMsg = await waService.findQuotedMsgFromWA(chatId, quotedStanzaId);
-      if (waMsg) {
-        if (!quotedText) quotedText = waMsg.text?.trim() || '';
-        if (!quotedSender) quotedSender = waMsg.sender;
-        if (!quotedParticipant) quotedParticipant = waMsg.author;
-        if (waMsg.timestamp) quotedTimestamp = waMsg.timestamp;
-        if (waMsg.id && !quotedId) quotedId = waMsg.id;
+    if (quotedMessage) {
+      quotedText = extractMessageText(quotedMessage).trim();
+      quotedId = quotedMessage.id?._serialized || quotedId;
+      quotedStanzaId = quotedMessage.id?.id || quotedStanzaId;
+      quotedTimestamp = quotedMessage.timestamp || quotedTimestamp;
+      quotedParticipant = quotedMessage.author || quotedMessage.from || quotedParticipant;
+      quotedSender = quotedMessage._data?.notifyName || quotedMessage._data?.pushname || quotedSender;
+    }
+
+    // A stanza lookup supplies text/metadata when WhatsApp's quote helper fails,
+    // and its serialized ID lets us hydrate a real Message for media downloads.
+    let quoteRef = null;
+    if ((!quotedText || !quotedSender || (quotedMessage && typeof quotedMessage.downloadMedia !== 'function')) && quotedStanzaId) {
+      quoteRef = await waService.findQuotedMsgFromWA(chatId, quotedStanzaId);
+      if (quoteRef) {
+        quotedText ||= quoteRef.text?.trim() || '';
+        quotedSender ||= quoteRef.sender || '';
+        quotedParticipant ||= quoteRef.author || null;
+        quotedTimestamp = quoteRef.timestamp || quotedTimestamp;
+        quotedId ||= quoteRef.id || null;
       }
     }
 
-    // Download attachment if the quoted message has media
-    if (hasQuoted) {
+    if (quotedStanzaId && (!quotedMessage || typeof quotedMessage.downloadMedia !== 'function') && quoteRef?.serializedId) {
       try {
-        let quotedMsgObj = null;
-        if (msg.hasQuotedMsg) {
-          quotedMsgObj = await msg.getQuotedMessage();
-        } else if (msg._data?.quotedMsg) {
-          quotedMsgObj = msg._data.quotedMsg;
-        } else if (quotedStanzaId) {
-          quotedMsgObj = await waService.findQuotedMsgFromWA(chatId, quotedStanzaId);
-        }
-
-        if (quotedMsgObj && (quotedMsgObj.hasMedia || quotedMsgObj.type === 'image' || quotedMsgObj.type === 'document')) {
-          logger.info(`📎 Media detected in quoted message. Attempting download...`);
-
-          const media = await waService.downloadMedia(quotedMsgObj);
-
-          if (media) {
-            logger.info(`✅ Successfully downloaded attachment: ${media.filename}`);
-            reportedAttachment = {
-              data: media.data,
-              filename: media.filename || 'attachment',
-              mimetype: media.mimetype,
-            };
-          } else {
-            logger.warn(`⚠️ Media download returned null for message ${quotedMsgObj.id?._serialized}`);
-          }
+        quotedMessage = await waService.client.getMessageById(quoteRef.serializedId) || quotedMessage;
+        if (quotedMessage) {
+          quotedId = quotedMessage.id?._serialized || quotedId;
+          quotedStanzaId = quotedMessage.id?.id || quotedStanzaId;
+          quotedTimestamp = quotedMessage.timestamp || quotedTimestamp;
         }
       } catch (err) {
-        logger.error(`❌ Failed to download attachment: ${err.message}`);
+        logger.warn(`Could not hydrate quoted message: ${err?.message || err}`);
       }
     }
 
-    // ENSURE we have text for the ticket, even if the message is ONLY an image
-    if (!quotedText || quotedText.startsWith('/9j/') || quotedText.startsWith('iVBOR')) {
-      if (hasQuoted) {
-        try {
-          const quotedMsgObj = msg.hasQuotedMsg
-            ? await msg.getQuotedMessage()
-            : (msg._data?.quotedMsg || await waService.findQuotedMsgFromWA(chatId, quotedStanzaId));
-
-          if (quotedMsgObj) {
-            const caption = extractMessageText(quotedMsgObj).trim();
-            if (caption && !caption.startsWith('/9j/') && !caption.startsWith('iVBOR')) {
-              quotedText = caption;
-            } else if (reportedAttachment) {
-              quotedText = `[Image/Media Attachment]`;
-            } else {
-              quotedText = `[Media Attachment (Download Failed)]`;
-            }
-          }
-        } catch (e) {
-          logger.warn(`Failed to retrieve caption for image-only ticket: ${e.message}`);
-          quotedText = reportedAttachment ? `[Image/Media Attachment]` : `[Media Attachment]`;
-        }
+    if (quotedMessage && (quotedMessage.hasMedia || quotedMessage.type === 'image' || quotedMessage.type === 'document')) {
+      logger.info(`📎 Media detected in quoted message. Attempting download...`);
+      reportedAttachment = await waService.downloadMedia(quotedMessage);
+      if (reportedAttachment) {
+        reportedAttachment = {
+          data: reportedAttachment.data,
+          filename: reportedAttachment.filename || 'attachment',
+          mimetype: reportedAttachment.mimetype,
+        };
+        logger.info(`✅ Successfully downloaded attachment: ${reportedAttachment.filename}`);
+      } else {
+        logger.warn(`⚠️ Media download returned null for quoted stanza ${quotedStanzaId || 'unknown'}`);
       }
+    }
+
+    // Preserve a caption when present; otherwise use a neutral media marker.
+    if (!quotedText || quotedText.startsWith('/9j/') || quotedText.startsWith('iVBOR')) {
+      const caption = extractMessageText(quotedMessage).trim();
+      quotedText = caption && !caption.startsWith('/9j/') && !caption.startsWith('iVBOR')
+        ? caption
+        : (reportedAttachment ? '[Image/Media Attachment]' : '[Media Attachment (Download Failed)]');
     }
 
     const historyMatch = waService.groupHistories[chatId]?.find(m =>
@@ -255,7 +252,7 @@ async function processRaiseCommand({
       const isRaise = isCommandMessage(t, CONFIG.commands);
       const isBotResponse = t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖');
       const isQuotedText = quotedText && t.toLowerCase() === quotedText.toLowerCase().trim();
-      return !isRaise && !isBotResponse && !isQuotedText && t.length > 0;
+      return !isRaise && !isBotResponse && !isQuotedText && !isGenericContextMessage(t) && t.length > 0;
     });
     contextMessages = nonRaise.slice(-CONFIG.contextMessagesCount);
   }
@@ -264,6 +261,7 @@ async function processRaiseCommand({
     if (!m || !m.text || !m.text.trim()) return false;
     const t = m.text.trim();
     if (isCommandMessage(t, CONFIG.commands)) return false;
+    if (isGenericContextMessage(t)) return false;
     if (t.startsWith('🎟️') || t.startsWith('ℹ') || t.startsWith('⚠') || t.startsWith('✖')) return false;
     if (quotedText && t.toLowerCase() === quotedText.toLowerCase().trim()) return false;
     return true;
@@ -311,7 +309,9 @@ async function processRaiseCommand({
     logger.info(`📧 Sending email ticket...`);
     const emailSuccess = await mailService.sendTicket(ticketData, aiSummary);
 
-    markMessageRaisedTicket(msg.id?._serialized || null, msg.id?.id || msg._data?.id?.id || null);
+    if (emailSuccess) {
+      markMessageRaisedTicket(msg.id?._serialized || null, msg.id?.id || msg._data?.id?.id || null);
+    }
 
     if (emailSuccess && CONFIG.confirmInGroup) {
       try {
@@ -327,18 +327,18 @@ async function processRaiseCommand({
       }
     }
 
-    if (aiSummary) {
+    if (emailSuccess) {
       await csvService.logTicket({
         timestamp: quotedTimestamp,
         chatName,
         raiserName: senderName,
-        issueSubject: aiSummary.subject || `[No AI subject] ${cleanedQuotedText.slice(0, 60)}`,
+        issueSubject: aiSummary?.subject || raiserNotes || cleanedQuotedText.slice(0, 60),
         raiserNotes,
-        summary: aiSummary.summary,
+        summary: aiSummary?.summary || cleanedQuotedText,
       });
     }
   } catch (err) {
-    logger.error(`Failed to process /raise command: ${err.message}`);
+    logger.error(`Failed to process /raise command: ${err?.stack || err?.message || err}`);
   }
 }
 
@@ -566,7 +566,7 @@ client.on('ready', async () => {
 });
 
 client.on('auth_failure', msg => {
-  logger.error('✖ Auth failed:', msg);
+  logger.error(`✖ Auth failed: ${msg}`);
   process.exit(1);
 });
 
@@ -682,13 +682,14 @@ client.on('disconnected', reason => {
   logger.error(`Disconnected: ${reason}`);
   setTimeout(() => {
     logger.info('Reconnecting...');
-    client.initialize().catch(err => logger.error(`Reconnection failed: ${err.message}`));
+    client.initialize().catch(err => logger.error(`Reconnection failed: ${err?.stack || err?.message || err}`));
   }, 5000);
 });
 
 process.on('SIGINT', async () => {
   logger.info('\nGracefully shutting down WhatsApp Ticket Bot...');
   if (waService.syncCheckInterval) clearInterval(waService.syncCheckInterval);
+  healthServer.close();
   try {
     await client.destroy();
   } catch (_) { }
@@ -698,6 +699,7 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   logger.info('Shutting down...');
   if (waService.syncCheckInterval) clearInterval(waService.syncCheckInterval);
+  healthServer.close();
   try {
     await client.destroy();
   } catch (_) { }
@@ -706,6 +708,6 @@ process.on('SIGTERM', async () => {
 
 console.log('Starting WhatsApp Ticket Bot...');
 client.initialize().catch(err => {
-  logger.error(`Failed to initialize: ${err.message}`);
+  logger.error(`Failed to initialize: ${err?.stack || err?.message || err}`);
   process.exit(1);
 });

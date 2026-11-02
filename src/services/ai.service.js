@@ -51,31 +51,43 @@ async function summarize({ reportedText, reporterName, raiserName, raiserNotes, 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-    const res = await fetch(`${CONFIG.ai.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${CONFIG.ai.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: CONFIG.ai.model,
-        messages: [
-          { role: 'system', content: AI_SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.1,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (CONFIG.ai.apiKey) headers.Authorization = `Bearer ${CONFIG.ai.apiKey}`;
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const rawContent = data.choices?.[0]?.message?.content;
-    const parsed = extractJson(rawContent);
-    if (!parsed) throw new Error('Could not parse JSON response');
-    logger.info(`🤖 AI summarization finished successfully`);
-    return parsed;
+      const res = await fetch(`${CONFIG.ai.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: CONFIG.ai.model,
+          messages: [
+            { role: 'system', content: AI_SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.1,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const parsed = extractJson(data.choices?.[0]?.message?.content);
+      if (!parsed || typeof parsed.subject !== 'string' || typeof parsed.summary !== 'string') {
+        throw new Error('AI response did not contain a valid subject and summary');
+      }
+
+      const indexes = Array.isArray(parsed.relevant_context_indexes)
+        ? parsed.relevant_context_indexes.filter(index => Number.isInteger(index) && index >= 0 && index < (contextMessages?.length || 0))
+        : [];
+      logger.info(`🤖 AI summarization finished successfully`);
+      return {
+        subject: parsed.subject.trim().slice(0, 75),
+        summary: parsed.summary.trim(),
+        relevant_context_indexes: [...new Set(indexes)],
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   } catch (err) {
     if ((err.name === 'AbortError' || err.message === 'This operation was aborted') && retries > 0) {
       logger.warn(`AI fetch aborted, retrying in 3s... (${retries} attempt(s) left)`);

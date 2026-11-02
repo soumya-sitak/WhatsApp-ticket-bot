@@ -1,19 +1,26 @@
 require('dotenv').config();
 
+function parseInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+const mailPort = parseInteger(process.env.MAIL_PORT, 465, 1, 65535);
+
 const CONFIG = {
   // Multiple groups to monitor
   groups: (process.env.WHATSAPP_GROUPS || 'test').split(',').map(g => g.trim()).filter(Boolean),
 
   ignoreOwnMessages: process.env.BOT_IGNORE_OWN_MESSAGES === 'true' ? true : false,
   commands: (process.env.BOT_COMMANDS || 'raise,/raise,!raise,ticket,/ticket,!ticket').split(',').map(c => c.trim().toLowerCase()).filter(Boolean),
-  contextMessagesCount: parseInt(process.env.BOT_CONTEXT_MESSAGES_COUNT || '4', 10),
+  contextMessagesCount: parseInteger(process.env.BOT_CONTEXT_MESSAGES_COUNT, 4, 0, 50),
   confirmInGroup: process.env.BOT_CONFIRM_IN_GROUP === 'false' ? false : true,
 
   // Unified email recipients (all groups use these)
   mail: {
     host: process.env.MAIL_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.MAIL_PORT || '465', 10),
-    secure: process.env.MAIL_SECURE === 'false' ? false : true,
+    port: mailPort,
+    secure: process.env.MAIL_SECURE === undefined ? mailPort === 465 : process.env.MAIL_SECURE === 'true',
     user: (process.env.MAIL_USER || 'your-email@gmail.com').trim(),
     pass: (process.env.MAIL_PASS || '').trim(),
     to: (process.env.MAIL_TO || 'recipient@example.com').split(',').map(e => e.trim()).filter(e => e),
@@ -25,7 +32,7 @@ const CONFIG = {
 
   ai: {
     enabled: process.env.AI_ENABLED === 'false' ? false : true,
-    baseUrl: process.env.AI_BASE_URL || 'http://localhost:20128/v1',
+    baseUrl: (process.env.AI_BASE_URL || 'http://localhost:20128/v1').replace(/\/+$/, ''),
     model: process.env.AI_MODEL || 'omni',
     apiKey: process.env.AI_API_KEY || '',
   },

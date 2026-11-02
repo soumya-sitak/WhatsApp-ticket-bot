@@ -114,6 +114,16 @@ function isCommandMessage(text, commands) {
   return matchCommand(text, commands) !== null;
 }
 
+const GENERIC_CONTEXT_MESSAGES = new Set([
+  'hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+  'ok', 'okay', 'sure', 'noted', 'thanks', 'thank you', 'will do', 'got it',
+]);
+
+function isGenericContextMessage(text) {
+  const normalized = String(text || '').toLowerCase().replace(/[.!?,\s]+/g, ' ').trim();
+  return GENERIC_CONTEXT_MESSAGES.has(normalized);
+}
+
 function cleanIssueText(text) {
   if (!text || typeof text !== 'string') return text || '';
 
@@ -134,5 +144,6 @@ module.exports = {
   getMsgChatId,
   matchCommand,
   isCommandMessage,
+  isGenericContextMessage,
   cleanIssueText,
 };

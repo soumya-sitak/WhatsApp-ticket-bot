@@ -5,18 +5,15 @@ const logger = require('../logger');
 
 function escapeCSVField(value) {
   if (value === null || value === undefined) return '""';
-  const str = String(value);
-  if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return `"${str}"`;
+  let str = String(value);
+  // Prevent spreadsheet applications from treating user text as a formula.
+  if (/^[\s]*[=+\-@]/.test(str)) str = `'${str}`;
+  return `"${str.replace(/"/g, '""')}"`;
 }
 
 async function logTicket(ticketData) {
   try {
     const csvPath = path.join(process.cwd(), 'tickets.csv');
-    const fileExists = fs.existsSync(csvPath);
-
     const headers = 'Timestamp,Group,Raiser,Issue,Notes,Summary\n';
     const { timestamp, chatName, raiserName, issueSubject, raiserNotes, summary } = ticketData;
 
@@ -30,12 +27,13 @@ async function logTicket(ticketData) {
       summary || '',
     ].map(escapeCSVField).join(',') + '\n';
 
-    if (!fileExists) {
-      fs.writeFileSync(csvPath, headers + row, 'utf8');
-      logger.info(`Created tickets.csv with first ticket`);
-    } else {
-      fs.appendFileSync(csvPath, row, 'utf8');
-      logger.info(`Appended ticket to tickets.csv`);
+    const file = await fs.promises.open(csvPath, 'a+');
+    try {
+      const { size } = await file.stat();
+      await file.writeFile(size === 0 ? headers + row : row, 'utf8');
+      logger.info(size === 0 ? 'Created tickets.csv with first ticket' : 'Appended ticket to tickets.csv');
+    } finally {
+      await file.close();
     }
   } catch (err) {
     logger.warn(`CSV logging failed: ${err.message}`);

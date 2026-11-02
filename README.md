@@ -5,7 +5,7 @@ A professional WhatsApp group monitoring bot that automatically converts issue r
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
-- **Node.js 16+** installed.
+- **Node.js 18+** installed.
 - **Ollama** installed and running locally (for AI summaries).
 - **Gmail Account** with an [App Password](https://support.google.com/accounts/answer/185833?hl=en) (standard passwords won't work).
 

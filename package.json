@@ -2,7 +2,7 @@
   "name": "whatsapp-ticket-bot",
   "version": "1.0.0",
   "description": "Production-grade WhatsApp group monitoring bot that creates support tickets via email",
-  "main": "whatsapp-mail-bridge.js",
+  "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
     "dev": "NODE_ENV=development node src/bot.js",
@@ -40,7 +40,7 @@
     "whatsapp-web.js": "^1.34.7"
   },
   "engines": {
-    "node": ">=16.0.0",
+    "node": ">=18.0.0",
     "npm": ">=7.0.0"
   },
   "repository": {

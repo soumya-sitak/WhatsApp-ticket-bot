@@ -73,12 +73,12 @@ RUN chown -R node:node /app
 # Switch to non-root user
 USER node
 
-# Expose health check port (if ticket-viewer is used)
-EXPOSE 3000
+# Expose the local WhatsApp readiness endpoint.
+EXPOSE 3001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));" || exit 0
+    CMD node -e "require('http').get('http://127.0.0.1:3001/health', (r) => { r.resume(); process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
 
 # Start the application
 CMD ["node", "src/bot.js"]

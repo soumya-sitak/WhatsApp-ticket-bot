@@ -3,6 +3,10 @@ const { CONFIG } = require('../config');
 const { escapeHtml, formatTime } = require('../utils/wa-utils');
 const logger = require('../logger');
 
+function toHtmlText(value) {
+  return escapeHtml(value).replace(/\r?\n/g, '<br/>');
+}
+
 const transporter = nodemailer.createTransport({
   host: CONFIG.mail.host,
   port: CONFIG.mail.port,
@@ -13,20 +17,22 @@ const transporter = nodemailer.createTransport({
 async function sendTicket(ticketData, ai) {
   const { chatName, reportedText, reporterName, raiserName, raiserNotes, contextMessages, reportedTimestamp, attachment } = ticketData;
 
-  const subject = ai?.subject
-    ? `${CONFIG.prefix} ${ai.subject}`
-    : `${CONFIG.prefix} ${chatName}: ${reportedText.slice(0, 60)}`;
+  const subjectText = ai?.subject?.trim()
+    || `${chatName}: ${raiserNotes?.trim() || reportedText.slice(0, 60)}`;
+  const subject = `${CONFIG.prefix} ${subjectText}`
+    .replace(/[\r\n]+/g, ' ')
+    .slice(0, 240);
 
   const summaryHtml = ai?.summary
     ? `<div style="background:#f0f9ff;border-left:4px solid #0284c7;padding:14px 16px;border-radius:4px;margin-bottom:18px;">
          <h4 style="margin:0 0 8px 0;color:#0369a1;font-size:15px;">Issue Summary</h4>
-         <p style="margin:0;line-height:1.5;color:#1e293b;font-size:14px;">${escapeHtml(ai.summary).replace(/\\n/g, '<br/>')}</p>
+         <p style="margin:0;line-height:1.5;color:#1e293b;font-size:14px;">${toHtmlText(ai.summary)}</p>
        </div>`
     : '';
 
   const raiserNoteHtml = raiserNotes
     ? `<div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:10px 14px;border-radius:4px;margin-bottom:14px;font-size:13px;color:#92400e;">
-         <b>Note from ${escapeHtml(raiserName)}:</b> ${escapeHtml(raiserNotes)}
+         <b>Note from ${escapeHtml(raiserName)}:</b> ${toHtmlText(raiserNotes)}
        </div>`
     : '';
 
@@ -41,7 +47,7 @@ async function sendTicket(ticketData, ai) {
       const contextHtml = validIndexes.map(idx => {
         const ctx = contextMessages[idx];
         const senderEscaped = escapeHtml(ctx.sender);
-        const textEscaped = escapeHtml(ctx.text).replace(/\\n/g, '<br/>');
+        const textEscaped = toHtmlText(ctx.text);
         return `
           <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #e5e7eb;">
             <div style="font-size:12px;color:#64748b;margin-bottom:3px;">
@@ -85,7 +91,7 @@ async function sendTicket(ticketData, ai) {
             <div style="font-size:12px;color:#64748b;margin-bottom:4px;">
               ${formatTime(reportedTimestamp)} — <b>${escapeHtml(reporterName)}</b>
             </div>
-            <div>${escapeHtml(reportedText).replace(/\\n/g, '<br/>')}</div>
+            <div>${toHtmlText(reportedText)}</div>
           </div>
         </div>
       </div>
@@ -97,11 +103,11 @@ async function sendTicket(ticketData, ai) {
       to: CONFIG.mail.to,
       subject: subject,
       html: html,
-      attachments: attachment ? [{
+      ...(attachment ? { attachments: [{
         filename: attachment.filename,
         content: attachment.data,
         contentType: attachment.mimetype,
-      }] : [],
+      }] } : {}),
     };
     if (CONFIG.mail.cc.length > 0) mailOptions.cc = CONFIG.mail.cc;
     if (CONFIG.mail.bcc.length > 0) mailOptions.bcc = CONFIG.mail.bcc;
@@ -111,7 +117,7 @@ async function sendTicket(ticketData, ai) {
     logger.info(`Email ticket sent successfully`);
     return true;
   } catch (err) {
-    logger.error(`Mail error: ${err.message}`);
+    logger.error(`Mail error: ${err?.stack || err?.message || err}`);
     return false;
   }
 }

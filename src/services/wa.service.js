@@ -214,7 +214,7 @@ class WAService {
         if (media) return media;
       }
     } catch (err) {
-      logger.error(`Media download error in WAService: ${err.message}`);
+      logger.error(`Media download error in WAService: ${err?.stack || err?.message || err}`);
     }
     return null;
   }
@@ -245,6 +245,7 @@ class WAService {
             const notifyName = msg.notifyName || msg.sender?.pushname || msg.sender?.name || '';
             return {
               id: msg.id?._serialized || sId,
+              serializedId: msg.id?._serialized || '',
               stanzaId: msg.id?.id || sId,
               text: body,
               sender: notifyName,
